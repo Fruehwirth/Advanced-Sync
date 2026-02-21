@@ -1,0 +1,11 @@
+services:
+  vault-sync:
+    build: .
+    ports:
+      - "8443:8443"
+      - "21547:21547/udp"
+    volumes:
+      - ./data:/data
+    environment:
+      - SERVER_PASSWORD=changeme
+    restart: unless-stopped

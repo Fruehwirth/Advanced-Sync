@@ -1,0 +1,757 @@
+/**
+ * Settings tab for Advanced Sync.
+ * Includes the full inline setup wizard (no popup) and the dashboard.
+ */
+
+import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { sha256String } from "./crypto/encryption";
+import { discoverServers, isDiscoveryAvailable } from "./network/discovery";
+import { MessageType, PROTOCOL_VERSION } from "@vault-sync/shared/protocol";
+import type { InitialSyncStrategy } from "./types";
+import type AdvancedSyncPlugin from "./main";
+
+const TOTAL_STEPS = 7;
+
+function toHttpUrl(wsUrl: string): string {
+  return wsUrl.replace("wss://", "https://").replace("ws://", "http://").replace(/\/sync$/, "");
+}
+
+function getHostname(): string {
+  try { return require("os").hostname(); } catch { return "My Device"; }
+}
+
+function formatTimeAgo(ts: number): string {
+  const diff = Date.now() - ts, m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function stateLabel(state: string): string {
+  const map: Record<string, string> = {
+    disconnected: "Disconnected", connecting: "Connecting...",
+    authenticating: "Authenticating...", syncing: "Syncing...",
+    idle: "Connected", error: "Error",
+  };
+  return map[state] ?? state;
+}
+
+function logLabel(direction: string): string {
+  const map: Record<string, string> = {
+    upload: "Uploaded", download: "Downloaded", delete: "Deleted",
+    connect: "Connected to server", disconnect: "Disconnected", error: "Error",
+  };
+  return map[direction] ?? direction;
+}
+
+/** Scroll an input into view after keyboard appears (mobile). */
+function focusAndScroll(input: HTMLElement): void {
+  setTimeout(() => input.focus(), 50);
+  input.addEventListener("focus", () => {
+    setTimeout(() => input.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+  }, { once: true });
+}
+
+export class AdvancedSyncSettingsTab extends PluginSettingTab {
+  plugin: AdvancedSyncPlugin;
+
+  // ---- Wizard state (persists while the settings tab instance lives) ----
+  private wStep = 0;
+  private wServerUrl = "";
+  private wServerPassword = "";
+  private wServerPasswordHash = "";
+  private wEncPass = "";
+  private wEncPassConfirm = "";
+  private wDeviceName = "";
+  private wStrategy: InitialSyncStrategy = "merge";
+  private wSyncPlugins = true;
+  private wSyncSettings = true;
+  private wSyncWorkspace = false;
+  private wErrorMsg = "";
+  private serverReachable = false;
+  private pingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private dashboardRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+  constructor(app: App, plugin: AdvancedSyncPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+    this.resetWizard();
+  }
+
+  /** Reset wizard to initial state (called when re-running wizard). */
+  resetWizard(): void {
+    const s = this.plugin.settings;
+    this.wStep = 0;
+    this.wServerUrl = s.serverUrl || "";
+    this.wServerPassword = "";
+    this.wServerPasswordHash = "";
+    this.wEncPass = "";
+    this.wEncPassConfirm = "";
+    this.wDeviceName = s.deviceName || getHostname();
+    this.wStrategy = "merge";
+    this.wSyncPlugins = s.syncPlugins;
+    this.wSyncSettings = s.syncSettings;
+    this.wSyncWorkspace = s.syncWorkspace;
+    this.wErrorMsg = "";
+    this.serverReachable = false;
+  }
+
+  hide(): void {
+    if (this.dashboardRefreshInterval) {
+      clearInterval(this.dashboardRefreshInterval);
+      this.dashboardRefreshInterval = null;
+    }
+    if (this.pingDebounceTimer) {
+      clearTimeout(this.pingDebounceTimer);
+      this.pingDebounceTimer = null;
+    }
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.addClass("as-settings-container");
+
+    if (!this.plugin.settings.setupComplete) {
+      this.renderWizard(containerEl);
+    } else {
+      this.renderDashboard(containerEl);
+    }
+  }
+
+  // ================================================================
+  // INLINE WIZARD
+  // ================================================================
+
+  private renderWizard(container: HTMLElement): void {
+    // Step indicator
+    const indicator = container.createDiv("as-wizard-indicator");
+    for (let i = 0; i < TOTAL_STEPS; i++) {
+      const dot = indicator.createSpan("as-wizard-dot");
+      if (i === this.wStep) dot.addClass("active");
+      if (i < this.wStep) dot.addClass("completed");
+    }
+
+    const body = container.createDiv("as-wizard-inline-body");
+
+    switch (this.wStep) {
+      case 0: this.wRenderWelcome(body); break;
+      case 1: this.wRenderFindServer(body); break;
+      case 2: this.wRenderServerPassword(body); break;
+      case 3: this.wRenderEncryptionPassword(body); break;
+      case 4: this.wRenderDeviceName(body); break;
+      case 5: this.wRenderSyncSetup(body); break;
+      case 6: this.wRenderSummary(body); break;
+    }
+
+    // Nav buttons
+    const nav = container.createDiv("as-wizard-nav");
+
+    if (this.wStep > 0) {
+      const backBtn = nav.createEl("button", { text: "Back" });
+      backBtn.addEventListener("click", () => { this.wStep--; this.display(); });
+    } else {
+      nav.createDiv();
+    }
+
+    if (this.wStep < TOTAL_STEPS - 1) {
+      const nextBtn = nav.createEl("button", { text: "Next", cls: "mod-cta" });
+      nextBtn.addEventListener("click", () => this.wNext());
+    }
+  }
+
+  private wRenderWelcome(body: HTMLElement): void {
+    const title = body.createDiv("as-wizard-title");
+    setIcon(title.createSpan("as-wizard-icon"), "refresh-cw");
+    title.createSpan({ text: "Advanced Sync Setup" });
+    body.createEl("p", {
+      text: "This wizard will set up encrypted vault synchronization across your devices.",
+      cls: "as-wizard-desc",
+    });
+    const ul = body.createEl("ul", { cls: "as-wizard-features" });
+    ul.createEl("li", { text: "End-to-end encrypted — the server never sees your data" });
+    ul.createEl("li", { text: "Sync notes, plugins, and settings across all devices" });
+    ul.createEl("li", { text: "Real-time — changes appear on other devices within seconds" });
+    ul.createEl("li", { text: "Self-hosted — your data stays on your own server" });
+  }
+
+  private wRenderFindServer(body: HTMLElement): void {
+    const titleRow = body.createDiv({ attr: { style: "display: flex; align-items: center; gap: 6px;" } });
+    titleRow.createEl("h3", { text: "Find Server", attr: { style: "margin: 0;" } });
+    // Inline status indicator
+    const statusInline = titleRow.createSpan("as-server-status-inline");
+
+    // Auto-discovery
+    if (isDiscoveryAvailable()) {
+      const scanRow = body.createDiv("as-scan-header");
+      const spinner = scanRow.createDiv("as-scan-spinner");
+      setIcon(spinner, "refresh-cw");
+      const scanLbl = scanRow.createSpan({ text: "Scanning all network interfaces...", cls: "as-scan-label" });
+      const listEl = body.createDiv("as-server-list");
+
+      discoverServers(5000).then((servers) => {
+        spinner.remove();
+        scanLbl.textContent = servers.length
+          ? `Found ${servers.length} server${servers.length > 1 ? "s" : ""} — click to select`
+          : "No servers found on the network";
+
+        if (servers.length > 0) {
+          for (const sv of servers) {
+            const item = listEl.createDiv("as-server-item");
+            setIcon(item.createSpan("as-server-icon"), "server");
+            const info = item.createDiv("as-server-item-info");
+            info.createSpan({ text: sv.hostname, cls: "as-server-item-name" });
+            info.createSpan({ text: `${sv.ip}:${sv.port}`, cls: "as-server-item-ip" });
+            item.addEventListener("click", () => {
+              this.wServerUrl = `ws://${sv.ip}:${sv.port}/sync`;
+              listEl.querySelectorAll(".as-server-item").forEach((el) => el.removeClass("selected"));
+              item.addClass("selected");
+              const hi = body.querySelector(".as-host-input") as HTMLInputElement;
+              const pi = body.querySelector(".as-port-input") as HTMLInputElement;
+              if (hi) { hi.value = sv.ip; }
+              if (pi) { pi.value = String(sv.port); }
+              triggerPing();
+            });
+          }
+        }
+      });
+    } else {
+      body.createEl("p", { text: "Auto-discovery is not available on mobile.", cls: "as-wizard-desc" });
+    }
+
+    // Manual entry
+    body.createEl("h4", { text: "Server Address", attr: { style: "margin: 14px 0 8px;" } });
+
+    let initialHost = "";
+    let initialPort = "8443";
+    if (this.wServerUrl) {
+      const m = this.wServerUrl.match(/wss?:\/\/([^:/]+):?(\d+)?/);
+      if (m) { initialHost = m[1] ?? ""; initialPort = m[2] ?? "8443"; }
+    }
+
+    const row = body.createDiv("as-field-group");
+    row.createEl("label", { text: "Host or IP", cls: "as-field-label" });
+
+    const inputRow = row.createDiv("as-input-row");
+    const hostInput = inputRow.createEl("input", {
+      type: "text", placeholder: "IP or URL",
+      cls: "as-input as-host-input",
+    });
+    hostInput.value = initialHost;
+
+    inputRow.createSpan({ text: ":", cls: "as-port-sep" });
+
+    const portInput = inputRow.createEl("input", {
+      type: "text", placeholder: "8443",
+      cls: "as-input as-port-input",
+      attr: { style: "width: 48px; flex-shrink: 0;" },
+    });
+    portInput.value = initialPort;
+
+    // URL preview label
+    const urlLabel = row.createDiv("as-url-label");
+
+    // Store reference to Next button (set by renderWizard after this method)
+    const updateNextBtn = () => {
+      const nextBtn = this.containerEl.querySelector(".as-wizard-nav .mod-cta") as HTMLButtonElement | null;
+      if (nextBtn) {
+        if (this.serverReachable) {
+          nextBtn.disabled = false;
+          nextBtn.removeClass("as-btn-disabled");
+        } else {
+          nextBtn.disabled = true;
+          nextBtn.addClass("as-btn-disabled");
+        }
+      }
+    };
+
+    const updateStatusIcon = (status: "pinging" | "ok" | "fail" | "none") => {
+      statusInline.empty();
+      statusInline.className = "as-server-status-inline";
+      if (status === "pinging") {
+        statusInline.addClass("as-status-pinging");
+        setIcon(statusInline, "loader");
+      } else if (status === "ok") {
+        statusInline.addClass("as-status-ok");
+        setIcon(statusInline, "check");
+      } else if (status === "fail") {
+        statusInline.addClass("as-status-fail");
+        setIcon(statusInline, "x");
+      }
+    };
+
+    const doPing = async () => {
+      const h = hostInput.value.trim();
+      const p = portInput.value.trim() || "8443";
+      if (!h) {
+        this.wServerUrl = "";
+        urlLabel.style.display = "none";
+        this.serverReachable = false;
+        updateStatusIcon("none");
+        updateNextBtn();
+        return;
+      }
+      this.wServerUrl = `ws://${h}:${p}/sync`;
+      urlLabel.textContent = this.wServerUrl;
+      urlLabel.style.display = "block";
+      updateStatusIcon("pinging");
+      const httpUrl = toHttpUrl(this.wServerUrl);
+      try {
+        const res = await fetch(`${httpUrl}/health`, { signal: AbortSignal.timeout(5000) });
+        this.serverReachable = res.ok;
+        updateStatusIcon(res.ok ? "ok" : "fail");
+      } catch {
+        this.serverReachable = false;
+        updateStatusIcon("fail");
+      }
+      updateNextBtn();
+    };
+
+    const triggerPing = () => {
+      const h = hostInput.value.trim();
+      const p = portInput.value.trim() || "8443";
+      if (h) {
+        this.wServerUrl = `ws://${h}:${p}/sync`;
+        urlLabel.textContent = this.wServerUrl;
+        urlLabel.style.display = "block";
+      } else {
+        this.wServerUrl = "";
+        urlLabel.style.display = "none";
+      }
+      this.serverReachable = false;
+      updateNextBtn();
+      if (this.pingDebounceTimer) clearTimeout(this.pingDebounceTimer);
+      if (h) {
+        this.pingDebounceTimer = setTimeout(() => doPing(), 500);
+      }
+    };
+
+    hostInput.addEventListener("input", triggerPing);
+    portInput.addEventListener("input", triggerPing);
+
+    // Initial state
+    if (this.serverReachable && this.wServerUrl) {
+      updateStatusIcon("ok");
+    } else if (this.wServerUrl) {
+      // Auto-ping on re-render if URL already set
+      setTimeout(() => doPing(), 100);
+    }
+
+    if (this.wServerUrl) {
+      urlLabel.textContent = this.wServerUrl;
+      urlLabel.style.display = "block";
+    }
+
+    // Disable Next initially until ping succeeds
+    setTimeout(() => updateNextBtn(), 0);
+
+    focusAndScroll(hostInput);
+  }
+
+  private wRenderServerPassword(body: HTMLElement): void {
+    body.createEl("h3", { text: "Server Password" });
+    body.createEl("p", { text: "Enter the password configured on your sync server (SERVER_PASSWORD in docker-compose.yml).", cls: "as-wizard-desc" });
+
+    if (this.wErrorMsg) {
+      body.createDiv({ text: this.wErrorMsg, cls: "as-auth-error" });
+    }
+
+    const g = body.createDiv("as-field-group");
+    g.createEl("label", { text: "Server Password", cls: "as-field-label" });
+    const wrapper = g.createDiv("as-password-wrapper");
+    const input = wrapper.createEl("input", { type: "password", placeholder: "Server password", cls: "as-input as-password-input" });
+    input.value = this.wServerPassword;
+    input.addEventListener("input", () => { this.wServerPassword = input.value; });
+    const toggle = wrapper.createDiv("as-eye-toggle");
+    setIcon(toggle, "eye");
+    toggle.addEventListener("click", () => {
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      toggle.empty(); setIcon(toggle, hidden ? "eye-off" : "eye");
+    });
+    focusAndScroll(input);
+  }
+
+  private wRenderEncryptionPassword(body: HTMLElement): void {
+    body.createEl("h3", { text: "Encryption Password" });
+    body.createEl("p", {
+      text: "This password encrypts your vault before uploading. The server never sees it. Keep it safe — it cannot be recovered.",
+      cls: "as-wizard-desc as-warning",
+    });
+
+    if (this.wErrorMsg) {
+      body.createDiv({ text: this.wErrorMsg, cls: "as-error", attr: { style: "display:block; margin-bottom:8px;" } });
+    }
+
+    const g1 = body.createDiv("as-field-group");
+    g1.createEl("label", { text: "Encryption Password", cls: "as-field-label" });
+    const w1 = g1.createDiv("as-password-wrapper");
+    const i1 = w1.createEl("input", { type: "password", placeholder: "Encryption password", cls: "as-input as-password-input" });
+    i1.value = this.wEncPass;
+    i1.addEventListener("input", () => { this.wEncPass = i1.value; });
+    const t1 = w1.createDiv("as-eye-toggle");
+    setIcon(t1, "eye");
+    t1.addEventListener("click", () => {
+      const h = i1.type === "password"; i1.type = h ? "text" : "password";
+      t1.empty(); setIcon(t1, h ? "eye-off" : "eye");
+    });
+
+    const g2 = body.createDiv("as-field-group");
+    g2.createEl("label", { text: "Confirm Password", cls: "as-field-label" });
+    const i2 = g2.createEl("input", { type: "password", placeholder: "Confirm encryption password", cls: "as-input" });
+    i2.value = this.wEncPassConfirm;
+    i2.addEventListener("input", () => { this.wEncPassConfirm = i2.value; });
+
+    focusAndScroll(i1);
+  }
+
+  private wRenderDeviceName(body: HTMLElement): void {
+    body.createEl("h3", { text: "Device Name" });
+    body.createEl("p", { text: "A name to identify this device on the server and in the sync log.", cls: "as-wizard-desc" });
+
+    const g = body.createDiv("as-field-group");
+    g.createEl("label", { text: "Device Name", cls: "as-field-label" });
+    const input = g.createEl("input", { type: "text", placeholder: "e.g. MacBook, iPhone, Desktop", cls: "as-input" });
+    input.value = this.wDeviceName;
+    input.addEventListener("input", () => { this.wDeviceName = input.value.trim(); });
+    focusAndScroll(input);
+  }
+
+  private wRenderSyncSetup(body: HTMLElement): void {
+    body.createEl("h3", { text: "Sync Setup" });
+
+    const allFiles = this.app.vault.getFiles();
+    const vaultFiles = allFiles.filter(f => !f.path.startsWith(".obsidian/plugins/advanced-sync/"));
+    const isEmpty = vaultFiles.length === 0;
+
+    if (isEmpty) {
+      body.createEl("p", { text: "This vault is empty. All files from the server will be downloaded.", cls: "as-wizard-desc" });
+      this.wStrategy = "pull";
+    } else {
+      body.createEl("p", {
+        text: `This vault has ${vaultFiles.length} file${vaultFiles.length !== 1 ? "s" : ""}. How should it sync with the server?`,
+        cls: "as-wizard-desc",
+      });
+    }
+
+    if (!isEmpty) {
+      const cards = body.createDiv("as-strategy-cards");
+      const strategies: Array<{ value: InitialSyncStrategy; icon: string; label: string; desc: string; recommended: boolean }> = [
+        { value: "pull",  icon: "download",  label: "Pull from server",  desc: "Download everything from the server. Local-only files will be deleted.", recommended: false },
+        { value: "merge", icon: "git-merge", label: "Merge",             desc: "Keep the newest version of each file. Both vaults are combined.", recommended: true },
+        { value: "push",  icon: "upload",    label: "Push to server",    desc: "Upload this vault to the server. Server-only files will be removed.", recommended: false },
+      ];
+
+      for (const s of strategies) {
+        const card = cards.createDiv("as-strategy-card");
+        if (s.value === this.wStrategy) card.addClass("selected");
+        const hdr = card.createDiv("as-strategy-card-header");
+        setIcon(hdr.createSpan("as-strategy-icon"), s.icon);
+        hdr.createSpan({ text: s.label, cls: "as-strategy-label" });
+        if (s.recommended) hdr.createSpan({ text: "Recommended", cls: "as-strategy-badge" });
+        card.createDiv({ text: s.desc, cls: "as-strategy-desc" });
+        card.addEventListener("click", () => {
+          this.wStrategy = s.value;
+          cards.querySelectorAll(".as-strategy-card").forEach(el => el.removeClass("selected"));
+          card.addClass("selected");
+        });
+      }
+    }
+
+    // Sync toggles
+    const toggleSection = body.createDiv("as-wizard-toggles");
+    toggleSection.createDiv({ text: "What to sync", cls: "as-wizard-toggles-title" });
+    this.addWizardToggle(toggleSection, "Sync plugins", "Sync installed plugins (.obsidian/plugins/)", this.wSyncPlugins, v => { this.wSyncPlugins = v; });
+    this.addWizardToggle(toggleSection, "Sync settings", "Sync Obsidian settings (appearance, hotkeys, etc.)", this.wSyncSettings, v => { this.wSyncSettings = v; });
+    this.addWizardToggle(toggleSection, "Sync workspace", "Sync workspace layout and open files", this.wSyncWorkspace, v => { this.wSyncWorkspace = v; });
+  }
+
+  private wRenderSummary(body: HTMLElement): void {
+    body.createEl("h3", { text: "Ready to Sync" });
+    body.createEl("p", { text: "Everything is configured. Click Start Syncing to connect.", cls: "as-wizard-desc" });
+
+    const strategyLabels: Record<InitialSyncStrategy, string> = {
+      pull: "Pull from server", merge: "Merge (newest wins)", push: "Push to server",
+    };
+
+    const summary = body.createDiv("as-summary");
+    this.addSummaryRow(summary, "Server",        this.wServerUrl);
+    this.addSummaryRow(summary, "Device",         this.wDeviceName);
+    this.addSummaryRow(summary, "Initial sync",   strategyLabels[this.wStrategy]);
+    this.addSummaryRow(summary, "Sync plugins",   this.wSyncPlugins  ? "Yes" : "No");
+    this.addSummaryRow(summary, "Sync settings",  this.wSyncSettings ? "Yes" : "No");
+    this.addSummaryRow(summary, "Encryption",     "AES-256-GCM / PBKDF2");
+
+    const startBtn = body.createEl("button", { text: "Start Syncing", cls: "mod-cta as-start-btn" });
+    startBtn.addEventListener("click", () => this.wFinish());
+  }
+
+  private addWizardToggle(parent: HTMLElement, label: string, desc: string, initial: boolean, onChange: (v: boolean) => void): void {
+    const row = parent.createDiv("as-toggle-row");
+    const info = row.createDiv("as-toggle-row-info");
+    info.createSpan({ text: label, cls: "as-toggle-row-label" });
+    info.createSpan({ text: desc, cls: "as-toggle-row-desc" });
+    const lbl = row.createEl("label", { cls: "as-toggle-switch" });
+    const cb = lbl.createEl("input", { type: "checkbox" });
+    cb.checked = initial;
+    lbl.createSpan({ cls: "as-toggle-track" });
+    cb.addEventListener("change", () => onChange(cb.checked));
+  }
+
+  private addSummaryRow(parent: HTMLElement, label: string, value: string): void {
+    const row = parent.createDiv("as-summary-row");
+    row.createSpan({ text: label, cls: "as-summary-label" });
+    row.createSpan({ text: value, cls: "as-summary-value" });
+  }
+
+  private async wNext(): Promise<void> {
+    this.wErrorMsg = "";
+
+    switch (this.wStep) {
+      case 1:
+        if (!this.wServerUrl || !this.serverReachable) return;
+        break;
+      case 2: {
+        if (!this.wServerPassword) return;
+        this.wServerPasswordHash = await sha256String(this.wServerPassword);
+        // Validate password via temporary WS handshake
+        const nextBtn = this.containerEl.querySelector(".as-wizard-nav .mod-cta") as HTMLButtonElement | null;
+        if (nextBtn) { nextBtn.textContent = "Validating..."; nextBtn.addClass("as-btn-loading"); }
+        const authResult = await this.validateServerPassword();
+        if (nextBtn) { nextBtn.textContent = "Next"; nextBtn.removeClass("as-btn-loading"); }
+        if (!authResult.ok) {
+          this.wErrorMsg = authResult.reason || "Authentication failed — check password.";
+          this.display();
+          return;
+        }
+        break;
+      }
+      case 3:
+        if (!this.wEncPass) { this.wErrorMsg = "Password cannot be empty."; this.display(); return; }
+        if (this.wEncPass !== this.wEncPassConfirm) { this.wErrorMsg = "Passwords do not match."; this.display(); return; }
+        break;
+      case 4:
+        if (!this.wDeviceName) return;
+        break;
+    }
+    this.wStep++;
+    this.display();
+  }
+
+  /** Quick WS handshake to validate the server password. */
+  private validateServerPassword(): Promise<{ ok: boolean; reason?: string }> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        ws.close();
+        resolve({ ok: false, reason: "Connection timed out." });
+      }, 8000);
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(this.wServerUrl);
+      } catch {
+        clearTimeout(timeout);
+        resolve({ ok: false, reason: "Could not connect to server." });
+        return;
+      }
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          type: MessageType.AUTH,
+          clientId: "__wizard_test__",
+          deviceName: "Wizard Test",
+          passwordHash: this.wServerPasswordHash,
+          protocolVersion: PROTOCOL_VERSION,
+        }));
+      };
+
+      ws.onmessage = (ev) => {
+        clearTimeout(timeout);
+        try {
+          const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "{}");
+          if (msg.type === MessageType.AUTH_OK) {
+            ws.close();
+            resolve({ ok: true });
+          } else if (msg.type === MessageType.AUTH_FAIL) {
+            ws.close();
+            resolve({ ok: false, reason: msg.reason || "Invalid password." });
+          }
+        } catch {
+          ws.close();
+          resolve({ ok: false, reason: "Unexpected server response." });
+        }
+      };
+
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        resolve({ ok: false, reason: "Connection error." });
+      };
+
+      ws.onclose = () => {
+        clearTimeout(timeout);
+      };
+    });
+  }
+
+  private async wFinish(): Promise<void> {
+    Object.assign(this.plugin.settings, {
+      serverUrl:           this.wServerUrl,
+      serverPasswordHash:  this.wServerPasswordHash,
+      deviceName:          this.wDeviceName,
+      initialSyncStrategy: this.wStrategy,
+      syncPlugins:         this.wSyncPlugins,
+      syncSettings:        this.wSyncSettings,
+      syncWorkspace:       this.wSyncWorkspace,
+      setupComplete:       true,
+    });
+    await this.plugin.saveSettings();
+    await this.plugin.connectWithEncryptionPassword(this.wEncPass);
+    this.display(); // Re-render as dashboard
+  }
+
+  // ================================================================
+  // DASHBOARD (settings when configured)
+  // ================================================================
+
+  private renderDashboard(container: HTMLElement): void {
+    // Header row
+    const headerRow = container.createDiv("as-settings-header");
+    const pillContainer = headerRow.createDiv();
+
+    const renderStatePill = (parent: HTMLElement) => {
+      parent.empty();
+      const state = this.plugin.syncEngine?.state ?? "disconnected";
+      const pill = parent.createDiv(`as-settings-state-pill as-settings-state-${state}`);
+      pill.createSpan("as-settings-state-dot");
+      pill.createSpan({ text: stateLabel(state) });
+    };
+    renderStatePill(pillContainer);
+
+    const headerBtns = headerRow.createDiv("as-settings-header-btns");
+    const wizBtn = headerBtns.createEl("button", { cls: "as-btn-sm" });
+    setIcon(wizBtn.createSpan(), "wand");
+    wizBtn.createSpan({ text: "Re-run wizard" });
+    wizBtn.addEventListener("click", () => { this.resetWizard(); this.display(); });
+
+    // Dashboard section
+    container.createDiv({ cls: "as-settings-section-label", text: "Dashboard" });
+    const dash = container.createDiv("as-settings-dash");
+
+    // Sync log
+    const logCard = dash.createDiv("as-dash-card");
+    logCard.createDiv("as-dash-card-header").createSpan({ text: "Recent Changes", cls: "as-dash-card-title" });
+    const logBody = logCard.createDiv("as-dash-log");
+
+    const renderHistory = () => {
+      logBody.empty();
+      const history = this.plugin.syncEngine?.history ?? [];
+      if (history.length === 0) {
+        logBody.createDiv({ text: "No changes yet", cls: "as-dash-empty" });
+      } else {
+        for (const entry of history.slice(0, 15)) {
+          const row = logBody.createDiv("as-dash-log-row");
+          row.createSpan({ cls: `as-dash-log-dot as-log-${entry.direction}` });
+          const info = row.createDiv("as-dash-log-info");
+          const nameRow = info.createDiv("as-dash-log-name-row");
+          nameRow.createSpan({ text: entry.filename || logLabel(entry.direction), cls: "as-dash-log-name" });
+          if (entry.count > 1) nameRow.createSpan({ text: `×${entry.count}`, cls: "as-popup-history-count" });
+          if (["upload","download","delete"].includes(entry.direction)) {
+            info.createSpan({ text: entry.path, cls: "as-dash-log-path" });
+          }
+          row.createSpan({ text: formatTimeAgo(entry.timestamp), cls: "as-dash-log-time" });
+        }
+      }
+    };
+    renderHistory();
+
+    // Periodic refresh of dashboard header + history
+    if (this.dashboardRefreshInterval) clearInterval(this.dashboardRefreshInterval);
+    this.dashboardRefreshInterval = setInterval(() => {
+      renderStatePill(pillContainer);
+      renderHistory();
+    }, 5000);
+
+    // Also listen to sync engine state changes for immediate pill update
+    const prevCallback = this.plugin.syncEngine?.onStateChange;
+    if (this.plugin.syncEngine) {
+      const origCallback = this.plugin.syncEngine.onStateChange;
+      this.plugin.syncEngine.onStateChange = (state, detail) => {
+        origCallback(state, detail);
+        renderStatePill(pillContainer);
+        renderHistory();
+      };
+    }
+
+    // Devices
+    const devCard = dash.createDiv("as-dash-card");
+    devCard.createDiv("as-dash-card-header").createSpan({ text: "Devices", cls: "as-dash-card-title" });
+    const devBody = devCard.createDiv("as-dash-devices");
+    devBody.createDiv({ text: "Loading...", cls: "as-dash-empty" });
+
+    if (this.plugin.settings.serverUrl) {
+      fetch(`${toHttpUrl(this.plugin.settings.serverUrl)}/api/clients`)
+        .then(r => r.json())
+        .then((data: { online: any[]; offline: any[] }) => {
+          devBody.empty();
+          const all = [
+            ...(data.online || []).map((c: any) => ({ ...c, isOnline: true })),
+            ...(data.offline || []).map((c: any) => ({ ...c, isOnline: false })),
+          ];
+          if (all.length === 0) { devBody.createDiv({ text: "No devices found", cls: "as-dash-empty" }); return; }
+          for (const dev of all) {
+            const row = devBody.createDiv("as-dash-device-row");
+            row.createSpan({ cls: `as-dash-device-dot ${dev.isOnline ? "as-online" : "as-offline"}` });
+            const info = row.createDiv("as-dash-device-info");
+            info.createSpan({ text: dev.deviceName, cls: "as-dash-device-name" });
+            info.createSpan({ text: `${dev.ip} · ${dev.isOnline ? "online" : formatTimeAgo(dev.lastSeen)}`, cls: "as-dash-device-meta" });
+            if (dev.isOnline) row.createSpan({ text: "Online", cls: "as-badge-online" });
+          }
+        })
+        .catch(() => { devBody.empty(); devBody.createDiv({ text: "Could not reach server", cls: "as-dash-empty" }); });
+    }
+
+    // Connection settings
+    container.createDiv({ cls: "as-settings-section-label", text: "Connection" });
+    new Setting(container).setName("Server URL").setDesc("WebSocket URL of the sync server")
+      .addText(t => { t.setValue(this.plugin.settings.serverUrl).setPlaceholder("ws://10.0.0.1:8443/sync"); t.onChange(async v => { this.plugin.settings.serverUrl = v.trim(); await this.plugin.saveSettings(); }); });
+    new Setting(container).setName("Device name").setDesc("Display name for this device on the server")
+      .addText(t => { t.setValue(this.plugin.settings.deviceName); t.onChange(async v => { this.plugin.settings.deviceName = v.trim(); await this.plugin.saveSettings(); }); });
+    new Setting(container).setName("Auto-connect").setDesc("Automatically connect when Obsidian starts")
+      .addToggle(t => { t.setValue(this.plugin.settings.autoConnect); t.onChange(async v => { this.plugin.settings.autoConnect = v; await this.plugin.saveSettings(); }); });
+
+    // Sync options
+    container.createDiv({ cls: "as-settings-section-label", text: "Sync Options" });
+    new Setting(container).setName("Sync plugins").setDesc("Synchronize installed plugins across devices")
+      .addToggle(t => { t.setValue(this.plugin.settings.syncPlugins); t.onChange(async v => { this.plugin.settings.syncPlugins = v; await this.plugin.saveSettings(); }); });
+    new Setting(container).setName("Sync settings").setDesc("Synchronize Obsidian settings (.obsidian/*.json)")
+      .addToggle(t => { t.setValue(this.plugin.settings.syncSettings); t.onChange(async v => { this.plugin.settings.syncSettings = v; await this.plugin.saveSettings(); }); });
+    new Setting(container).setName("Sync workspace").setDesc("Synchronize workspace layout (workspace.json)")
+      .addToggle(t => { t.setValue(this.plugin.settings.syncWorkspace); t.onChange(async v => { this.plugin.settings.syncWorkspace = v; await this.plugin.saveSettings(); }); });
+    new Setting(container).setName("Excluded paths").setDesc("Patterns to exclude (one per line). Supports * and **.")
+      .addTextArea(ta => {
+        ta.setValue(this.plugin.settings.excludePatterns.join("\n")).setPlaceholder("e.g.\n*.tmp\n.trash/**");
+        ta.inputEl.rows = 3;
+        ta.onChange(async v => { this.plugin.settings.excludePatterns = v.split("\n").map(s => s.trim()).filter(Boolean); await this.plugin.saveSettings(); });
+      });
+
+    // Advanced
+    container.createDiv({ cls: "as-settings-section-label", text: "Advanced" });
+    new Setting(container).setName("Force full sync").setDesc("Re-sync all files from scratch")
+      .addButton(btn => { btn.setButtonText("Force Sync"); btn.onClick(() => this.plugin.syncEngine.forceSync()); });
+    new Setting(container).setName("Reset sync state").setDesc("Clear all local sync state. Your vault files are not deleted.")
+      .addButton(btn => {
+        btn.setButtonText("Reset").setWarning();
+        btn.onClick(async () => {
+          if (!window.confirm("Reset local sync state?\n\nYour vault files are not deleted. You will need to run the setup wizard again.")) return;
+          this.plugin.syncEngine.disconnect();
+          const clientId = this.plugin.settings.clientId;
+          Object.assign(this.plugin.settings, { clientId, deviceName: "", serverUrl: "", serverPasswordHash: "", vaultSalt: "", setupComplete: false, lastSequence: 0, serverId: "" });
+          await this.plugin.saveSettings();
+          this.resetWizard();
+          this.display();
+        });
+      });
+  }
+}

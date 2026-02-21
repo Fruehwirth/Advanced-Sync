@@ -1,0 +1,107 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advanced Sync — Server Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <nav class="sidebar">
+      <div class="sidebar-logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+        <span>Advanced Sync</span>
+      </div>
+      <div class="sidebar-nav">
+        <a class="nav-item active" data-tab="dashboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          Dashboard
+        </a>
+        <a class="nav-item" data-tab="devices">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Devices
+        </a>
+        <a class="nav-item" data-tab="log">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Change Log
+        </a>
+        <a class="nav-item" data-tab="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M20 12h2M2 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41"/></svg>
+          Settings
+        </a>
+      </div>
+      <div class="sidebar-status">
+        <span id="server-status-dot" class="status-dot disconnected"></span>
+        <span id="server-status-text">Connecting...</span>
+      </div>
+    </nav>
+    <main class="content">
+      <div id="tab-dashboard" class="tab-content active">
+        <div class="page-header"><h1>Dashboard</h1></div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+            <div><div class="stat-value" id="stat-files">0</div><div class="stat-label">Synced Files</div></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+            <div><div class="stat-value" id="stat-size">0 B</div><div class="stat-label">Encrypted Storage</div></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
+            <div><div class="stat-value" id="stat-online">0</div><div class="stat-label">Online Devices</div></div>
+          </div>
+        </div>
+        <div class="section-header"><h2>Recent Activity</h2></div>
+        <div class="card"><div id="dashboard-log" class="activity-list"><div class="empty-state">No recent activity</div></div></div>
+      </div>
+      <div id="tab-devices" class="tab-content">
+        <div class="page-header"><h1>Devices</h1></div>
+        <div class="section-header"><h2>Online</h2></div>
+        <div class="card" style="margin-bottom:16px"><div id="clients-online" class="clients-list"><div class="empty-state">No devices online</div></div></div>
+        <div class="section-header"><h2>Previously Connected</h2></div>
+        <div class="card"><div id="clients-offline" class="clients-list"><div class="empty-state">No device history</div></div></div>
+      </div>
+      <div id="tab-log" class="tab-content">
+        <div class="page-header"><h1>Change Log</h1><button class="btn btn-ghost" id="btn-clear-log">Clear</button></div>
+        <div class="card"><div id="change-log" class="change-log"><div class="empty-state">Waiting for changes...</div></div></div>
+      </div>
+      <div id="tab-settings" class="tab-content">
+        <div class="page-header"><h1>Settings</h1></div>
+        <div class="setting-group">
+          <h2>Server Info</h2>
+          <div class="setting-item">
+            <div class="setting-label"><span class="setting-name">Status</span><span class="setting-desc">Live dashboard connection</span></div>
+            <span id="settings-status-text" class="setting-value">—</span>
+          </div>
+          <div class="setting-item">
+            <div class="setting-label"><span class="setting-name">Uptime</span><span class="setting-desc">Time since last restart</span></div>
+            <span id="settings-uptime" class="setting-value">—</span>
+          </div>
+        </div>
+        <div class="setting-group danger-zone">
+          <h2>Danger Zone</h2>
+          <div class="setting-item">
+            <div class="setting-label"><span class="setting-name">Reset Server Data</span><span class="setting-desc">Delete all stored files and vault salt. All devices will need to re-sync.</span></div>
+            <button class="btn btn-danger" id="btn-reset">Reset Server</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-title">Reset Server Data?</div>
+      <p class="modal-desc">This will permanently delete all <strong id="modal-file-count">0</strong> stored files and the vault salt. All devices will need to re-sync.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-modal-cancel">Cancel</button>
+        <button class="btn btn-danger" id="btn-modal-confirm">Yes, Reset</button>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
