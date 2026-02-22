@@ -1,6 +1,8 @@
 services:
   vault-sync:
-    build: .
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     ports:
       - "8443:8443"
       - "21547:21547/udp"
@@ -8,4 +10,5 @@ services:
       - ./data:/data
     environment:
       - SERVER_PASSWORD=changeme
+    user: "1000:1000"   # run as michael so data files are deletable without sudo
     restart: unless-stopped

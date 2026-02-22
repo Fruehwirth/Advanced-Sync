@@ -1,16 +1,8 @@
 /**
  * Server storage: SQLite for metadata + blob files on disk.
  */
-import type { EncryptedFileEntry, ChangeRecord, SyncManifest } from "../../shared/types";
+import type { EncryptedFileEntry, ChangeRecord, SyncManifest, ClientSession } from "../../shared/types";
 import type { ServerConfig } from "./config";
-export interface ClientSession {
-    clientId: string;
-    deviceName: string;
-    ip: string;
-    firstSeen: number;
-    lastSeen: number;
-    isOnline: boolean;
-}
 export declare class Storage {
     private db;
     private blobDir;
@@ -33,6 +25,24 @@ export declare class Storage {
     upsertClientSession(clientId: string, deviceName: string, ip: string): void;
     setClientOffline(clientId: string): void;
     getClientSessions(): ClientSession[];
+    createToken(token: string, clientId: string, deviceName: string, ip: string): void;
+    getToken(token: string): {
+        clientId: string;
+        deviceName: string;
+        ip: string;
+        createdAt: number;
+        lastUsed: number;
+    } | null;
+    revokeTokenByClientId(clientId: string): void;
+    updateTokenLastUsed(token: string): void;
+    getAllTokens(): Array<{
+        token: string;
+        clientId: string;
+        deviceName: string;
+        ip: string;
+        createdAt: number;
+        lastUsed: number;
+    }>;
     appendLog(type: string, text: string, timestamp: number): void;
     getLog(limit?: number): Array<{
         type: string;

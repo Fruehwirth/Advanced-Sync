@@ -50,6 +50,15 @@ class Storage {
         text      TEXT    NOT NULL,
         timestamp INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS auth_tokens (
+        token TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        ip TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id);
     `);
     }
     getVaultSalt() {
@@ -123,6 +132,27 @@ class Storage {
         const rows = this.db.prepare("SELECT client_id, device_name, ip, first_seen, last_seen, is_online FROM client_sessions ORDER BY last_seen DESC").all();
         return rows.map((r) => ({ clientId: r.client_id, deviceName: r.device_name, ip: r.ip, firstSeen: r.first_seen, lastSeen: r.last_seen, isOnline: r.is_online === 1 }));
     }
+    // ---- Auth tokens ----
+    createToken(token, clientId, deviceName, ip) {
+        const now = Date.now();
+        this.db.prepare("INSERT OR REPLACE INTO auth_tokens (token, client_id, device_name, ip, created_at, last_used) VALUES (?, ?, ?, ?, ?, ?)").run(token, clientId, deviceName, ip, now, now);
+    }
+    getToken(token) {
+        const row = this.db.prepare("SELECT client_id, device_name, ip, created_at, last_used FROM auth_tokens WHERE token = ?").get(token);
+        if (!row)
+            return null;
+        return { clientId: row.client_id, deviceName: row.device_name, ip: row.ip, createdAt: row.created_at, lastUsed: row.last_used };
+    }
+    revokeTokenByClientId(clientId) {
+        this.db.prepare("DELETE FROM auth_tokens WHERE client_id = ?").run(clientId);
+    }
+    updateTokenLastUsed(token) {
+        this.db.prepare("UPDATE auth_tokens SET last_used = ? WHERE token = ?").run(Date.now(), token);
+    }
+    getAllTokens() {
+        const rows = this.db.prepare("SELECT token, client_id, device_name, ip, created_at, last_used FROM auth_tokens ORDER BY last_used DESC").all();
+        return rows.map((r) => ({ token: r.token, clientId: r.client_id, deviceName: r.device_name, ip: r.ip, createdAt: r.created_at, lastUsed: r.last_used }));
+    }
     // ---- Activity log ----
     appendLog(type, text, timestamp) {
         this.db.prepare("INSERT INTO activity_log (type, text, timestamp) VALUES (?, ?, ?)").run(type, text, timestamp);
@@ -143,6 +173,7 @@ class Storage {
         this.db.exec("DELETE FROM vault_meta");
         this.db.exec("DELETE FROM client_sessions");
         this.db.exec("DELETE FROM activity_log");
+        this.db.exec("DELETE FROM auth_tokens");
         try {
             fs_1.default.rmSync(this.blobDir, { recursive: true, force: true });
             fs_1.default.mkdirSync(this.blobDir, { recursive: true });

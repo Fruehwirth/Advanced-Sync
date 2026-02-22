@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Server authentication: password verification + rate limiting.
+ * Server authentication: password verification, token management, rate limiting.
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -66,6 +66,22 @@ class Auth {
         catch {
             return false;
         }
+    }
+    /** Generate a cryptographically random 64-char hex token (32 random bytes). */
+    generateToken() {
+        return crypto_1.default.randomBytes(32).toString("hex");
+    }
+    /** Validate a session token against the database. Returns the session or null. */
+    validateToken(token, storage) {
+        const session = storage.getToken(token);
+        if (!session)
+            return null;
+        storage.updateTokenLastUsed(token);
+        return { clientId: session.clientId, deviceName: session.deviceName };
+    }
+    /** Revoke all tokens for a given clientId. */
+    revokeToken(clientId, storage) {
+        storage.revokeTokenByClientId(clientId);
     }
 }
 exports.Auth = Auth;

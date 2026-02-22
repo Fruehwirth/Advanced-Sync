@@ -14,8 +14,9 @@ import type {
   FileRemovedMessage,
   FileDownloadResponseMessage,
   FileUploadAckMessage,
+  ClientListMessage,
 } from "@vault-sync/shared/protocol";
-import type { SyncState } from "@vault-sync/shared/types";
+import type { SyncState, ClientSession } from "@vault-sync/shared/types";
 import { WsClient } from "./ws-client";
 import type { AdvancedSyncSettings } from "../types";
 
@@ -27,11 +28,15 @@ export type FileDownloadCallback = (msg: FileDownloadResponseMessage) => void;
 export type FileUploadAckCallback = (msg: FileUploadAckMessage) => void;
 export type BinaryDataCallback = (data: ArrayBuffer) => void;
 export type VaultSaltCallback = (salt: string, serverId: string) => void;
+export type AuthTokenCallback = (token: string) => void;
+export type ClientListCallback = (clients: ClientSession[]) => void;
 
 export class ConnectionManager {
   private wsClient: WsClient;
   private settings: AdvancedSyncSettings;
   private state: SyncState = "disconnected";
+  /** When set, used for auth instead of passwordHash. Cleared after use. */
+  private pendingPasswordHash: string | null = null;
 
   // Callbacks
   onStateChange: ConnectionStateCallback = () => {};
@@ -42,6 +47,8 @@ export class ConnectionManager {
   onFileUploadAck: FileUploadAckCallback = () => {};
   onBinaryData: BinaryDataCallback = () => {};
   onVaultSalt: VaultSaltCallback = () => {};
+  onAuthToken: AuthTokenCallback = () => {};
+  onClientList: ClientListCallback = () => {};
 
   constructor(settings: AdvancedSyncSettings) {
     this.settings = settings;
@@ -60,9 +67,10 @@ export class ConnectionManager {
     return this.wsClient.isConnected;
   }
 
-  /** Connect to the server. */
-  connect(): void {
+  /** Connect to the server. Optionally provide a passwordHash for initial auth. */
+  connect(passwordHash?: string): void {
     if (!this.settings.serverUrl) return;
+    this.pendingPasswordHash = passwordHash ?? null;
     this.setState("connecting");
     this.wsClient.connect(this.settings.serverUrl);
   }
@@ -91,18 +99,37 @@ export class ConnectionManager {
     });
   }
 
+  /** Send a CLIENT_KICK message to the server. */
+  kickClient(clientId: string): void {
+    this.send({
+      type: MessageType.CLIENT_KICK,
+      targetClientId: clientId,
+    });
+  }
+
   private handleWsState(wsState: "open" | "closed" | "error"): void {
     switch (wsState) {
       case "open":
         this.setState("authenticating");
-        // Send auth message
-        this.send({
+        // Build auth message: use token if available, otherwise passwordHash
+        const authMsg: ProtocolMessage = {
           type: MessageType.AUTH,
           clientId: this.settings.clientId,
           deviceName: this.settings.deviceName,
-          passwordHash: this.settings.serverPasswordHash,
           protocolVersion: PROTOCOL_VERSION,
-        });
+        };
+        if (this.pendingPasswordHash) {
+          (authMsg as any).passwordHash = this.pendingPasswordHash;
+          this.pendingPasswordHash = null;
+        } else if (this.settings.authToken) {
+          (authMsg as any).authToken = this.settings.authToken;
+        } else {
+          // No credentials available — this shouldn't happen, but handle gracefully
+          this.setState("error", "No credentials available");
+          this.wsClient.disconnect();
+          return;
+        }
+        this.send(authMsg);
         break;
       case "closed":
         if (this.state !== "disconnected") {
@@ -119,6 +146,8 @@ export class ConnectionManager {
     switch (msg.type) {
       case MessageType.AUTH_OK: {
         const authOk = msg as AuthOkMessage;
+        // Save the auth token for future reconnects
+        this.onAuthToken(authOk.authToken);
         this.onVaultSalt(authOk.vaultSalt, authOk.serverId);
         this.setState("syncing");
         break;
@@ -143,6 +172,9 @@ export class ConnectionManager {
         break;
       case MessageType.FILE_UPLOAD_ACK:
         this.onFileUploadAck(msg as FileUploadAckMessage);
+        break;
+      case MessageType.CLIENT_LIST:
+        this.onClientList((msg as ClientListMessage).clients);
         break;
       case MessageType.PONG:
         // Keepalive response, no action needed

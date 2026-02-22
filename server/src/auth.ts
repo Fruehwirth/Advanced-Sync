@@ -1,9 +1,10 @@
 /**
- * Server authentication: password verification + rate limiting.
+ * Server authentication: password verification, token management, rate limiting.
  */
 
 import crypto from "crypto";
 import type { ServerConfig } from "./config";
+import type { Storage } from "./storage";
 
 interface RateLimitEntry {
   failures: number;
@@ -73,5 +74,23 @@ export class Auth {
     } catch {
       return false;
     }
+  }
+
+  /** Generate a cryptographically random 64-char hex token (32 random bytes). */
+  generateToken(): string {
+    return crypto.randomBytes(32).toString("hex");
+  }
+
+  /** Validate a session token against the database. Returns the session or null. */
+  validateToken(token: string, storage: Storage): { clientId: string; deviceName: string } | null {
+    const session = storage.getToken(token);
+    if (!session) return null;
+    storage.updateTokenLastUsed(token);
+    return { clientId: session.clientId, deviceName: session.deviceName };
+  }
+
+  /** Revoke all tokens for a given clientId. */
+  revokeToken(clientId: string, storage: Storage): void {
+    storage.revokeTokenByClientId(clientId);
   }
 }

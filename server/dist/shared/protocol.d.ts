@@ -1,4 +1,4 @@
-import type { EncryptedFileEntry } from "./types";
+import type { EncryptedFileEntry, ClientSession } from "./types";
 /** All message types in the sync protocol. */
 export declare enum MessageType {
     AUTH = "AUTH",
@@ -16,14 +16,18 @@ export declare enum MessageType {
     PING = "PING",
     PONG = "PONG",
     UI_SUBSCRIBE = "UI_SUBSCRIBE",
-    UI_EVENT = "UI_EVENT"
+    UI_EVENT = "UI_EVENT",
+    CLIENT_LIST = "CLIENT_LIST",
+    CLIENT_KICK = "CLIENT_KICK"
 }
 export interface AuthMessage {
     type: MessageType.AUTH;
     clientId: string;
     deviceName: string;
-    /** SHA-256 hash of the server password. */
-    passwordHash: string;
+    /** SHA-256 hash of the server password (for initial auth). */
+    passwordHash?: string;
+    /** Opaque session token (for reconnect). */
+    authToken?: string;
     protocolVersion: number;
 }
 export interface AuthOkMessage {
@@ -31,6 +35,8 @@ export interface AuthOkMessage {
     serverId: string;
     /** Base64-encoded vault salt (created on first connect, reused after). */
     vaultSalt: string;
+    /** Opaque session token for future reconnects. */
+    authToken: string;
 }
 export interface AuthFailMessage {
     type: MessageType.AUTH_FAIL;
@@ -75,6 +81,8 @@ export interface FileDownloadResponseMessage {
     encryptedMeta: string;
     mtime: number;
     size: number;
+    /** Size of the encrypted blob in bytes (for progress tracking). */
+    encryptedSize: number;
 }
 /** Server → Clients: a file was changed by another client. */
 export interface FileChangedMessage {
@@ -115,10 +123,20 @@ export interface UIEventMessage {
     event: "client_connected" | "client_disconnected" | "file_changed" | "file_removed" | "status";
     data: any;
 }
+/** Server → Clients: push updated client list. */
+export interface ClientListMessage {
+    type: MessageType.CLIENT_LIST;
+    clients: ClientSession[];
+}
+/** Client/Admin → Server: kick a device. */
+export interface ClientKickMessage {
+    type: MessageType.CLIENT_KICK;
+    targetClientId: string;
+}
 /** Union of all protocol messages. */
-export type ProtocolMessage = AuthMessage | AuthOkMessage | AuthFailMessage | SyncRequestMessage | SyncResponseMessage | FileUploadMessage | FileUploadAckMessage | FileDownloadMessage | FileDownloadResponseMessage | FileChangedMessage | FileRemovedMessage | FileDeleteMessage | PingMessage | PongMessage | UISubscribeMessage | UIEventMessage;
+export type ProtocolMessage = AuthMessage | AuthOkMessage | AuthFailMessage | SyncRequestMessage | SyncResponseMessage | FileUploadMessage | FileUploadAckMessage | FileDownloadMessage | FileDownloadResponseMessage | FileChangedMessage | FileRemovedMessage | FileDeleteMessage | PingMessage | PongMessage | UISubscribeMessage | UIEventMessage | ClientListMessage | ClientKickMessage;
 /** Current protocol version. */
-export declare const PROTOCOL_VERSION = 1;
+export declare const PROTOCOL_VERSION = 2;
 /** Default server port. */
 export declare const DEFAULT_PORT = 8443;
 /** UDP discovery port. */

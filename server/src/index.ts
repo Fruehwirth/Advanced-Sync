@@ -35,8 +35,12 @@ app.use(express.json({ limit: "64kb" }));
 // Allow Obsidian (Electron renderer) to call the REST API
 app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (_req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
   next();
 });
 
@@ -108,6 +112,19 @@ app.get("/api/clients", requireAuth, (_req, res) => {
     online:  sessions.filter((s) => s.isOnline),
     offline: sessions.filter((s) => !s.isOnline),
   });
+});
+
+// Session management endpoints
+app.get("/api/sessions", requireAuth, (_req, res) => {
+  const sessions = storage.getClientSessions();
+  res.json(sessions);
+});
+
+app.post("/api/sessions/:clientId/revoke", requireAuth, (req, res) => {
+  const { clientId } = req.params;
+  wsServer?.disconnectClient(clientId);
+  storage.setClientOffline(clientId);
+  res.json({ ok: true });
 });
 
 app.get("/api/log", requireAuth, (_req, res) => {

@@ -27,6 +27,9 @@ export declare class SyncWebSocketServer {
     private handleTextMessage;
     private handleBinaryMessage;
     private handleAuth;
+    private handleClientKick;
+    /** Push CLIENT_LIST to all authenticated sync clients. */
+    private broadcastClientList;
     private handleSyncRequest;
     private handleFileUploadHeader;
     private handleFileDownload;
@@ -35,6 +38,8 @@ export declare class SyncWebSocketServer {
     handleFileRemoval(clientId: string, fileId: string): void;
     /** Get list of currently connected (authenticated) clients. */
     getConnectedClients(): ClientInfo[];
+    /** Disconnect a client by clientId and revoke their token. */
+    disconnectClient(clientId: string): boolean;
     private pingClients;
     private send;
     private broadcastUIEvent;

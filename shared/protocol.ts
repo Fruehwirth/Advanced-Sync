@@ -1,6 +1,7 @@
 import type {
   EncryptedFileEntry,
   ClientInfo,
+  ClientSession,
   ChangeRecord,
 } from "./types";
 
@@ -31,6 +32,10 @@ export enum MessageType {
   // Web UI
   UI_SUBSCRIBE = "UI_SUBSCRIBE",
   UI_EVENT = "UI_EVENT",
+
+  // Client management
+  CLIENT_LIST = "CLIENT_LIST",
+  CLIENT_KICK = "CLIENT_KICK",
 }
 
 // --- Authentication ---
@@ -39,8 +44,10 @@ export interface AuthMessage {
   type: MessageType.AUTH;
   clientId: string;
   deviceName: string;
-  /** SHA-256 hash of the server password. */
-  passwordHash: string;
+  /** SHA-256 hash of the server password (for initial auth). */
+  passwordHash?: string;
+  /** Opaque session token (for reconnect). */
+  authToken?: string;
   protocolVersion: number;
 }
 
@@ -49,6 +56,8 @@ export interface AuthOkMessage {
   serverId: string;
   /** Base64-encoded vault salt (created on first connect, reused after). */
   vaultSalt: string;
+  /** Opaque session token for future reconnects. */
+  authToken: string;
 }
 
 export interface AuthFailMessage {
@@ -104,6 +113,8 @@ export interface FileDownloadResponseMessage {
   encryptedMeta: string;
   mtime: number;
   size: number;
+  /** Size of the encrypted blob in bytes (for progress tracking). */
+  encryptedSize: number;
 }
 
 /** Server → Clients: a file was changed by another client. */
@@ -156,6 +167,20 @@ export interface UIEventMessage {
   data: any;
 }
 
+// --- Client Management ---
+
+/** Server → Clients: push updated client list. */
+export interface ClientListMessage {
+  type: MessageType.CLIENT_LIST;
+  clients: ClientSession[];
+}
+
+/** Client/Admin → Server: kick a device. */
+export interface ClientKickMessage {
+  type: MessageType.CLIENT_KICK;
+  targetClientId: string;
+}
+
 /** Union of all protocol messages. */
 export type ProtocolMessage =
   | AuthMessage
@@ -173,10 +198,12 @@ export type ProtocolMessage =
   | PingMessage
   | PongMessage
   | UISubscribeMessage
-  | UIEventMessage;
+  | UIEventMessage
+  | ClientListMessage
+  | ClientKickMessage;
 
 /** Current protocol version. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Default server port. */
 export const DEFAULT_PORT = 8443;

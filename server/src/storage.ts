@@ -5,17 +5,8 @@
 import path from "path";
 import fs from "fs";
 import Database from "better-sqlite3";
-import type { EncryptedFileEntry, ChangeRecord, SyncManifest } from "../../shared/types";
+import type { EncryptedFileEntry, ChangeRecord, SyncManifest, ClientSession } from "../../shared/types";
 import type { ServerConfig } from "./config";
-
-export interface ClientSession {
-  clientId: string;
-  deviceName: string;
-  ip: string;
-  firstSeen: number;
-  lastSeen: number;
-  isOnline: boolean;
-}
 
 export class Storage {
   private db: Database.Database;
@@ -61,6 +52,15 @@ export class Storage {
         text      TEXT    NOT NULL,
         timestamp INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS auth_tokens (
+        token TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        ip TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_auth_tokens_client ON auth_tokens(client_id);
     `);
   }
 
@@ -140,6 +140,32 @@ export class Storage {
     return rows.map((r) => ({ clientId: r.client_id, deviceName: r.device_name, ip: r.ip, firstSeen: r.first_seen, lastSeen: r.last_seen, isOnline: r.is_online === 1 }));
   }
 
+  // ---- Auth tokens ----
+
+  createToken(token: string, clientId: string, deviceName: string, ip: string): void {
+    const now = Date.now();
+    this.db.prepare("INSERT OR REPLACE INTO auth_tokens (token, client_id, device_name, ip, created_at, last_used) VALUES (?, ?, ?, ?, ?, ?)").run(token, clientId, deviceName, ip, now, now);
+  }
+
+  getToken(token: string): { clientId: string; deviceName: string; ip: string; createdAt: number; lastUsed: number } | null {
+    const row = this.db.prepare("SELECT client_id, device_name, ip, created_at, last_used FROM auth_tokens WHERE token = ?").get(token) as { client_id: string; device_name: string; ip: string; created_at: number; last_used: number } | undefined;
+    if (!row) return null;
+    return { clientId: row.client_id, deviceName: row.device_name, ip: row.ip, createdAt: row.created_at, lastUsed: row.last_used };
+  }
+
+  revokeTokenByClientId(clientId: string): void {
+    this.db.prepare("DELETE FROM auth_tokens WHERE client_id = ?").run(clientId);
+  }
+
+  updateTokenLastUsed(token: string): void {
+    this.db.prepare("UPDATE auth_tokens SET last_used = ? WHERE token = ?").run(Date.now(), token);
+  }
+
+  getAllTokens(): Array<{ token: string; clientId: string; deviceName: string; ip: string; createdAt: number; lastUsed: number }> {
+    const rows = this.db.prepare("SELECT token, client_id, device_name, ip, created_at, last_used FROM auth_tokens ORDER BY last_used DESC").all() as Array<{ token: string; client_id: string; device_name: string; ip: string; created_at: number; last_used: number }>;
+    return rows.map((r) => ({ token: r.token, clientId: r.client_id, deviceName: r.device_name, ip: r.ip, createdAt: r.created_at, lastUsed: r.last_used }));
+  }
+
   // ---- Activity log ----
 
   appendLog(type: string, text: string, timestamp: number): void {
@@ -164,6 +190,7 @@ export class Storage {
     this.db.exec("DELETE FROM vault_meta");
     this.db.exec("DELETE FROM client_sessions");
     this.db.exec("DELETE FROM activity_log");
+    this.db.exec("DELETE FROM auth_tokens");
     try { fs.rmSync(this.blobDir, { recursive: true, force: true }); fs.mkdirSync(this.blobDir, { recursive: true }); } catch {}
     console.log("[Storage] Reset complete.");
   }

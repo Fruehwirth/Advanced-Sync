@@ -12,8 +12,10 @@ export interface AdvancedSyncSettings {
   deviceName: string;
   /** Server URL (e.g., ws://192.168.1.100:8443/sync). */
   serverUrl: string;
-  /** SHA-256 hash of the server password. */
-  serverPasswordHash: string;
+  /** Opaque session token from server (for reconnect without password). */
+  authToken: string;
+  /** Base64-encoded exported AES-256 key (persisted for auto-reconnect). */
+  encryptionKeyB64: string;
   /** Base64-encoded vault salt (received from server). */
   vaultSalt: string;
   /** Whether setup wizard has been completed. */
@@ -46,7 +48,8 @@ export const DEFAULT_SETTINGS: AdvancedSyncSettings = {
   clientId: "",
   deviceName: "",
   serverUrl: "",
-  serverPasswordHash: "",
+  authToken: "",
+  encryptionKeyB64: "",
   vaultSalt: "",
   setupComplete: false,
   autoConnect: true,

@@ -156,7 +156,6 @@ function connect() {
   ws.onopen=function(){setStatus("connected","Connected");};
   ws.onclose=function(e){
     if(e.code===4003){
-      // Auth rejected — clear stored token and show login
       sessionStorage.removeItem(AUTH_KEY);
       authHash=null;
       showLogin("Session expired. Please sign in again.");
@@ -232,20 +231,32 @@ function renderOnlineClients(){
   statOnline.textContent=onlineClients.length;
   if(onlineClients.length===0){clientsOnEl.innerHTML='<div class="empty-state">No devices online</div>';return;}
   clientsOnEl.innerHTML="";
-  onlineClients.forEach(function(c){clientsOnEl.appendChild(makeClientEl(c.deviceName,c.ip,"since "+fmtTime(c.connectedAt||Date.now()),true));});
+  onlineClients.forEach(function(c){
+    clientsOnEl.appendChild(makeClientEl(c.clientId,c.deviceName,c.ip,"since "+fmtTime(c.connectedAt||Date.now()),true));
+  });
 }
+
 function loadOfflineClients(){
   if(!authHash) return;
-  apiFetch("/api/clients").then(function(r){return r.json();}).then(function(data){
-    var offline=data.offline||[];
+  apiFetch("/api/sessions").then(function(r){return r.json();}).then(function(data){
+    var sessions=Array.isArray(data)?data:[];
+    var offline=sessions.filter(function(s){return !s.isOnline;});
     if(offline.length===0){clientsOffEl.innerHTML='<div class="empty-state">No device history</div>';return;}
     clientsOffEl.innerHTML="";
-    offline.forEach(function(c){clientsOffEl.appendChild(makeClientEl(c.deviceName,c.ip,"last seen "+fmtTimeAgo(c.lastSeen),false));});
+    offline.forEach(function(c){
+      var ts=c.lastUsed||c.lastSeen||0;
+      clientsOffEl.appendChild(makeClientEl(c.clientId,c.deviceName,c.ip,"last seen "+fmtTimeAgo(ts),false));
+    });
   }).catch(function(){});
 }
-function makeClientEl(name,ip,meta,online){
+
+function makeClientEl(clientId,name,ip,meta,online){
   var el=document.createElement("div"); el.className="client-item";
   var initial=(name||"?")[0].toUpperCase();
+  var badgeCls=online?"client-badge-online":"client-badge-offline";
+  var badgeText=online?"Online":"Offline";
+  var kickLabel=online?"Kick":"Revoke";
+
   el.innerHTML=
     '<div class="client-left">'+
       '<div class="client-avatar">'+esc(initial)+'</div>'+
@@ -254,25 +265,58 @@ function makeClientEl(name,ip,meta,online){
         '<span class="client-meta">'+esc(ip)+' &middot; '+esc(meta)+'</span>'+
       '</div>'+
     '</div>'+
-    '<span class="'+(online?"client-badge-online":"client-badge-offline")+'">'+(online?"Online":"Offline")+'</span>';
+    '<div class="client-right">'+
+      '<span class="'+badgeCls+'">'+badgeText+'</span>'+
+      '<button class="btn btn-sm btn-danger client-kick-btn">'+kickLabel+'</button>'+
+    '</div>';
+
+  el.querySelector(".client-kick-btn").addEventListener("click",function(){
+    kickClient(clientId,el,online);
+  });
   return el;
 }
 
-// ---- Log ----
+function kickClient(clientId,el,online){
+  var msg=online
+    ? "Disconnect and revoke this device's session? It will need to re-enter the password to reconnect."
+    : "Revoke this device's saved session? It will need to re-enter the password to reconnect.";
+  if(!confirm(msg)) return;
+  var btn=el.querySelector(".client-kick-btn");
+  if(btn){btn.disabled=true;btn.textContent="\u2026";}
+  apiFetch("/api/sessions/"+encodeURIComponent(clientId)+"/revoke",{method:"POST"})
+    .then(function(){
+      el.style.opacity="0";
+      el.style.transition="opacity 0.2s";
+      setTimeout(function(){
+        el.remove();
+        if(online){
+          onlineClients=onlineClients.filter(function(c){return c.clientId!==clientId;});
+          statOnline.textContent=onlineClients.length;
+          if(clientsOnEl.children.length===0)
+            clientsOnEl.innerHTML='<div class="empty-state">No devices online</div>';
+        } else {
+          if(clientsOffEl.children.length===0)
+            clientsOffEl.innerHTML='<div class="empty-state">No device history</div>';
+        }
+      },200);
+    })
+    .catch(function(){
+      alert("Failed to revoke device.");
+      if(btn){btn.disabled=false;btn.textContent=online?"Kick":"Revoke";}
+    });
+}
 
-/** Load persistent log history sent with the initial status message (newest-first array). */
+// ---- Log ----
 function loadLogHistory(entries) {
   logInit=true;
   changeLogEl.innerHTML="";
   if(!entries||entries.length===0){
     changeLogEl.innerHTML='<div class="empty-state">No activity yet</div>';
   } else {
-    // entries are newest-first; appendChild preserves that order (newest at top)
     entries.forEach(function(e){
       changeLogEl.appendChild(makeEntry(e.type, e.text, e.timestamp));
     });
   }
-  // Dashboard: show most recent MAX_DASH entries
   dashLogEl.innerHTML="";
   var recent=entries?entries.slice(0,MAX_DASH):[];
   if(recent.length===0){
@@ -282,7 +326,6 @@ function loadLogHistory(entries) {
   }
 }
 
-/** Add a new real-time entry to both logs. text is plain (will be escaped in makeEntry). */
 function addEntry(type,text){
   if(!logInit){changeLogEl.innerHTML="";logInit=true;}
   var e1=makeEntry(type,text,Date.now());

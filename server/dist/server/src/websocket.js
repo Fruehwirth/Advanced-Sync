@@ -28,11 +28,6 @@ class SyncWebSocketServer {
         this.storage = storage;
         this.auth = auth;
         this.config = config;
-        // Use noServer:true on both servers and route upgrades manually.
-        // Attaching two WebSocketServer instances with path options to the same
-        // HTTP server causes the non-matching server to call abortHandshake()
-        // on the socket, sending back an HTTP 400 which the client sees as
-        // "Invalid frame header". Manual routing is the correct pattern.
         this.wss = new ws_1.WebSocketServer({
             noServer: true,
             maxPayload: MAX_PAYLOAD,
@@ -113,6 +108,7 @@ class SyncWebSocketServer {
                     clientId: client.clientId,
                     deviceName: client.deviceName,
                 });
+                this.broadcastClientList();
             }
         });
         ws.on("error", (err) => {
@@ -155,6 +151,9 @@ class SyncWebSocketServer {
                 break;
             case protocol_1.MessageType.FILE_DELETE:
                 this.handleFileDelete(client, msg);
+                break;
+            case protocol_1.MessageType.CLIENT_KICK:
+                this.handleClientKick(client, msg);
                 break;
             case protocol_1.MessageType.PING:
                 this.send(client.ws, { type: protocol_1.MessageType.PONG, timestamp: Date.now() });
@@ -213,31 +212,65 @@ class SyncWebSocketServer {
             client.ws.close(4004, "Protocol version mismatch");
             return;
         }
-        // Verify password
-        const result = this.auth.verify(msg.passwordHash, client.ip);
-        if (!result.ok) {
+        let authenticatedClientId = msg.clientId;
+        let authenticatedDeviceName = msg.deviceName;
+        // Try token auth first, then password auth
+        if (msg.authToken) {
+            const session = this.auth.validateToken(msg.authToken, this.storage);
+            if (!session) {
+                this.send(client.ws, {
+                    type: protocol_1.MessageType.AUTH_FAIL,
+                    reason: "Session revoked",
+                });
+                return;
+            }
+            authenticatedClientId = session.clientId;
+            authenticatedDeviceName = session.deviceName;
+        }
+        else if (msg.passwordHash) {
+            const result = this.auth.verify(msg.passwordHash, client.ip);
+            if (!result.ok) {
+                this.send(client.ws, {
+                    type: protocol_1.MessageType.AUTH_FAIL,
+                    reason: result.reason || "Authentication failed",
+                });
+                return;
+            }
+        }
+        else {
             this.send(client.ws, {
                 type: protocol_1.MessageType.AUTH_FAIL,
-                reason: result.reason || "Authentication failed",
+                reason: "No credentials provided",
             });
             return;
         }
         // Authentication successful
         client.authenticated = true;
-        client.clientId = msg.clientId;
-        client.deviceName = msg.deviceName;
+        client.clientId = authenticatedClientId;
+        client.deviceName = authenticatedDeviceName;
         // Get or create vault salt
         let vaultSalt = this.storage.getVaultSalt() ?? "";
         if (!vaultSalt) {
-            // Generate new salt (first client to connect)
             const saltBytes = require("crypto").randomBytes(32);
             vaultSalt = saltBytes.toString("base64");
             this.storage.setVaultSalt(vaultSalt);
+        }
+        // Generate a new token (or reuse existing if token auth was used)
+        let authToken;
+        if (msg.authToken) {
+            authToken = msg.authToken;
+        }
+        else {
+            // Revoke old tokens for this client, then create a new one
+            this.storage.revokeTokenByClientId(authenticatedClientId);
+            authToken = this.auth.generateToken();
+            this.storage.createToken(authToken, authenticatedClientId, authenticatedDeviceName, client.ip);
         }
         this.send(client.ws, {
             type: protocol_1.MessageType.AUTH_OK,
             serverId: this.config.serverId,
             vaultSalt,
+            authToken,
         });
         // Persist session for device history
         this.storage.upsertClientSession(client.clientId, client.deviceName, client.ip);
@@ -248,6 +281,43 @@ class SyncWebSocketServer {
             deviceName: client.deviceName,
             ip: client.ip,
         });
+        // Push updated client list to all authenticated clients
+        this.broadcastClientList();
+    }
+    handleClientKick(sender, msg) {
+        const targetClientId = msg.targetClientId;
+        // Find the target client's WebSocket connection
+        for (const [ws, client] of this.clients) {
+            if (client.clientId === targetClientId && client.authenticated) {
+                // Revoke their token
+                this.auth.revokeToken(targetClientId, this.storage);
+                // Close their connection
+                this.send(ws, {
+                    type: protocol_1.MessageType.AUTH_FAIL,
+                    reason: "Session revoked",
+                });
+                ws.close(4005, "Kicked by another client");
+                break;
+            }
+        }
+        // Also revoke token for offline clients
+        this.auth.revokeToken(targetClientId, this.storage);
+        this.storage.appendLog("kick", `${sender.deviceName} kicked ${targetClientId}`, Date.now());
+        console.log(`[WS] Client ${targetClientId} kicked by ${sender.deviceName}`);
+        // Client list will be updated when the kicked client's close handler fires
+    }
+    /** Push CLIENT_LIST to all authenticated sync clients. */
+    broadcastClientList() {
+        const sessions = this.storage.getClientSessions();
+        const msg = {
+            type: protocol_1.MessageType.CLIENT_LIST,
+            clients: sessions,
+        };
+        for (const [ws, client] of this.clients) {
+            if (client.authenticated && ws.readyState === ws_1.WebSocket.OPEN) {
+                this.send(ws, msg);
+            }
+        }
     }
     handleSyncRequest(client, msg) {
         if (msg.lastSequence === 0) {
@@ -288,13 +358,14 @@ class SyncWebSocketServer {
             // File not found — send empty response
             return;
         }
-        // Send metadata as text frame, then blob as binary frame
+        // Send metadata as text frame (with encryptedSize), then blob as binary frame
         this.send(client.ws, {
             type: protocol_1.MessageType.FILE_DOWNLOAD_RESPONSE,
             fileId: meta.fileId,
             encryptedMeta: meta.encryptedMeta,
             mtime: meta.mtime,
             size: meta.size,
+            encryptedSize: blob.length,
         });
         client.ws.send(blob);
     }
@@ -366,6 +437,23 @@ class SyncWebSocketServer {
             }
         }
         return result;
+    }
+    /** Disconnect a client by clientId and revoke their token. */
+    disconnectClient(clientId) {
+        for (const [ws, client] of this.clients) {
+            if (client.clientId === clientId && client.authenticated) {
+                this.auth.revokeToken(clientId, this.storage);
+                this.send(ws, {
+                    type: protocol_1.MessageType.AUTH_FAIL,
+                    reason: "Session revoked",
+                });
+                ws.close(4005, "Session revoked");
+                return true;
+            }
+        }
+        // Also revoke token for offline clients
+        this.auth.revokeToken(clientId, this.storage);
+        return false;
     }
     pingClients() {
         const now = Date.now();

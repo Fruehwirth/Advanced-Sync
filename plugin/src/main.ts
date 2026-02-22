@@ -3,14 +3,13 @@
  * E2E encrypted vault sync across devices via a self-hosted Docker server.
  */
 
-import { Plugin, Notice } from "obsidian";
+import { Plugin, Notice, Platform } from "obsidian";
 import type { SyncState } from "@vault-sync/shared/types";
 import { SyncEngine } from "./sync/sync-engine";
 import { SyncStatusBar } from "./ui/sync-status";
 import { SyncPopup } from "./ui/sync-popup";
 import { SyncHistoryView, SYNC_HISTORY_VIEW_TYPE } from "./ui/sync-history-view";
 import { AdvancedSyncSettingsTab } from "./settings";
-import { LoadingOverlay } from "./ui/loading-overlay";
 import type { AdvancedSyncSettings } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
@@ -38,7 +37,6 @@ export default class AdvancedSyncPlugin extends Plugin {
   statusBar!: SyncStatusBar;
   private popup!: SyncPopup;
   private settingsTab!: AdvancedSyncSettingsTab;
-  private encryptionPassword: string = "";
   private currentState: SyncState = "disconnected";
 
   async onload(): Promise<void> {
@@ -59,6 +57,14 @@ export default class AdvancedSyncPlugin extends Plugin {
       this.popup.refreshIfOpen();
       this.refreshHistoryViews();
       this.settingsTab.notifyDataChanged?.();
+    };
+
+    this.syncEngine.onActivityChange = () => {
+      // Refresh active items in sidebar views
+      for (const leaf of this.app.workspace.getLeavesOfType(SYNC_HISTORY_VIEW_TYPE)) {
+        if (leaf.view instanceof SyncHistoryView) leaf.view.refreshActive();
+      }
+      this.settingsTab.notifyActivityChanged?.();
     };
 
     // Wire progress into sidebar views and settings dashboard
@@ -97,8 +103,12 @@ export default class AdvancedSyncPlugin extends Plugin {
             : h;
         },
         () => this.currentState,
+        () => this.syncEngine?.activeItems ?? [],
       )
     );
+
+    // Ribbon icon for mobile
+    this.addRibbonIcon("refresh-cw", "Sync Status", () => this.activateHistoryView());
 
     this.addCommand({ id: "connect",      name: "Connect to sync server",     callback: () => this.connectToServer() });
     this.addCommand({ id: "disconnect",   name: "Disconnect from sync server", callback: () => this.disconnectFromServer() });
@@ -108,7 +118,12 @@ export default class AdvancedSyncPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.setupComplete && this.settings.autoConnect && this.settings.syncEnabled) {
-        this.promptAndConnect();
+        this.autoConnect();
+      }
+
+      // On mobile, auto-open the history view if configured
+      if (Platform.isMobile && this.settings.setupComplete && this.settings.autoConnect) {
+        this.activateHistoryView();
       }
     });
   }
@@ -117,7 +132,6 @@ export default class AdvancedSyncPlugin extends Plugin {
     this.popup?.close();
     this.syncEngine?.disconnect();
     this.statusBar?.destroy();
-    this.encryptionPassword = "";
     this.app.workspace.detachLeavesOfType(SYNC_HISTORY_VIEW_TYPE);
   }
 
@@ -135,8 +149,8 @@ export default class AdvancedSyncPlugin extends Plugin {
     (this.app as any).setting?.openTabById("advanced-sync");
   }
 
-  async connectWithEncryptionPassword(password: string): Promise<void> {
-    this.encryptionPassword = password;
+  /** Connect using a password (initial setup from wizard). */
+  async connectWithPassword(password: string): Promise<void> {
     await this.syncEngine.connect(password);
   }
 
@@ -147,22 +161,28 @@ export default class AdvancedSyncPlugin extends Plugin {
   private async handleToggleSync(enabled: boolean): Promise<void> {
     this.settings.syncEnabled = enabled;
     await this.saveSettings();
-    if (enabled) await this.promptAndConnect();
+    if (enabled) await this.autoConnect();
     else this.disconnectFromServer();
   }
 
-  private async promptAndConnect(): Promise<void> {
+  /** Auto-connect using stored token + key, or prompt for password. */
+  private async autoConnect(): Promise<void> {
     if (!this.settings.setupComplete) {
       await this.runSetupWizard();
       return;
     }
-    if (!this.encryptionPassword) {
-      const { PasswordPromptModal } = await import("./ui/wizard-modal");
-      const pw = await PasswordPromptModal.prompt(this.app);
-      if (!pw) return;
-      this.encryptionPassword = pw;
+    // If we have a stored token and key, use them
+    if (this.settings.authToken && this.settings.encryptionKeyB64) {
+      await this.syncEngine.connectWithToken();
+    } else {
+      // No stored credentials — redirect to settings
+      new Notice("Advanced Sync: Please enter your password in settings to connect.", 5000);
+      await this.runSetupWizard();
     }
-    await this.syncEngine.connect(this.encryptionPassword);
+  }
+
+  private async promptAndConnect(): Promise<void> {
+    await this.autoConnect();
   }
 
   private async connectToServer(): Promise<void> { await this.promptAndConnect(); }

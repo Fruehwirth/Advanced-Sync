@@ -92,21 +92,22 @@
 .as-wizard-indicator {
   display: flex;
   justify-content: center;
-  gap: 8px;
-  padding: 16px 0 8px;
+  gap: 12px;
+  padding: 16px 0 12px;
 }
 
 .as-wizard-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--background-modifier-border);
-  transition: background 0.2s;
+  transition: background 0.2s, transform 0.2s;
 }
 
 .as-wizard-dot.active {
   background: var(--interactive-accent);
-  transform: scale(1.2);
+  transform: scale(1.25);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--interactive-accent) 40%, transparent);
 }
 
 .as-wizard-dot.completed {
@@ -351,21 +352,29 @@
 /* --- Summary --- */
 .as-summary {
   margin: 16px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .as-summary-row {
   display: flex;
   justify-content: space-between;
-  padding: 8px 0;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--background-modifier-border);
 }
+.as-summary-row:last-child { border-bottom: none; }
+.as-summary-row:nth-child(even) { background: var(--background-secondary); }
 
 .as-summary-label {
   font-weight: 500;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
 .as-summary-value {
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-normal);
 }
 
@@ -444,6 +453,64 @@
 .as-overlay-hint {
   font-size: 12px;
   color: var(--text-faint);
+}
+
+/* --- Wizard Card Container (centered layout) --- */
+.as-wizard-card {
+  max-width: 500px;
+  margin: 0 auto;
+  padding: 32px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+}
+
+.as-settings-container .as-wizard-card {
+  margin-top: 24px;
+}
+
+/* Constrain field widths inside card */
+.as-wizard-card .as-field-group {
+  max-width: 400px;
+}
+
+/* Step indicator with labels */
+.as-wizard-step-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.as-wizard-step-label {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-align: center;
+  white-space: nowrap;
+  max-width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Current step title shown above the card */
+.as-wizard-step-title {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* Info callout for important notes */
+.as-wizard-callout {
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  line-height: 1.5;
 }
 
 /* Inline wizard inside settings tab */
@@ -682,14 +749,14 @@
 .as-strategy-cards {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 10px;
+  margin-bottom: 20px;
 }
 
 .as-strategy-card {
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 10px 14px;
+  border-radius: 8px;
+  padding: 14px 18px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
 }
@@ -1131,11 +1198,238 @@
 }
 
 /* ============================================================
+   Sync Preview — Wizard Step
+   ============================================================ */
+.as-preview-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 0;
+  justify-content: center;
+}
+
+.as-preview-stats {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin: 20px 0;
+}
+
+.as-preview-stat {
+  text-align: center;
+  padding: 12px 20px;
+  border-radius: 8px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  flex: 1;
+  min-width: 0;
+}
+
+.as-preview-stat-number {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.as-preview-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 2px;
+}
+
+.as-preview-download .as-preview-stat-number { color: var(--color-green, #4caf86); }
+.as-preview-upload   .as-preview-stat-number { color: #4a9eff; }
+.as-preview-delete   .as-preview-stat-number { color: var(--color-red, #e05252); }
+
+/* File lists */
+.as-preview-lists {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.as-preview-section {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.as-preview-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.as-preview-dl-section .as-preview-section-title {
+  background: color-mix(in srgb, var(--color-green, #4caf86) 8%, transparent);
+  color: var(--color-green, #4caf86);
+}
+.as-preview-ul-section .as-preview-section-title {
+  background: color-mix(in srgb, #4a9eff 8%, transparent);
+  color: #4a9eff;
+}
+.as-preview-del-section .as-preview-section-title {
+  background: color-mix(in srgb, var(--color-red, #e05252) 8%, transparent);
+  color: var(--color-red, #e05252);
+}
+
+.as-preview-file-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.as-preview-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 12px;
+}
+.as-preview-file-row:last-child { border-bottom: none; }
+.as-preview-file-row:hover { background: var(--background-modifier-hover); }
+
+.as-preview-file-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.as-preview-file-size {
+  color: var(--text-faint);
+  font-size: 11px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.as-preview-more {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: center;
+  font-style: italic;
+}
+
+.as-preview-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.as-preview-buttons button {
+  flex: 1;
+}
+
+/* Apply step — activity container */
+.as-apply-activity {
+  margin-top: 12px;
+}
+
+/* ============================================================
+   Unified Sync Activity Component (sync-activity.ts)
+   ============================================================ */
+.as-activity-badge-container {
+  padding: 8px 0 4px;
+}
+
+.as-activity-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 0;
+}
+
+.as-activity-active {
+  margin-bottom: 4px;
+}
+
+.as-activity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.as-activity-pending {
+  opacity: 0.5;
+}
+
+.as-activity-status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.as-activity-status-icon svg { width: 12px; height: 12px; }
+.as-activity-status-icon.as-spin svg { animation: as-spin 1s linear infinite; }
+
+.as-activity-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.as-activity-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.as-activity-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.as-activity-size {
+  font-size: 10px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.as-activity-error {
+  font-size: 11px;
+  color: var(--color-red, #e05252);
+  margin-top: 2px;
+}
+
+/* Kick button (dashboard devices) */
+.as-btn-kick {
+  color: var(--color-red, #e05252);
+  border-color: color-mix(in srgb, var(--color-red, #e05252) 30%, transparent);
+}
+.as-btn-kick:hover {
+  background: color-mix(in srgb, var(--color-red, #e05252) 10%, transparent);
+  color: var(--color-red, #e05252);
+}
+
+/* ============================================================
    Mobile Overrides
    ============================================================ */
 @media (max-width: 600px) {
   .as-wizard-modal {
     max-width: 100%;
+  }
+
+  .as-wizard-card {
+    padding: 20px 16px;
+    border-radius: 8px;
+    margin-top: 12px;
   }
 
   .as-wizard-body,
@@ -1147,6 +1441,11 @@
   .as-wizard-nav {
     padding-left: 16px;
     padding-right: 16px;
+    flex-direction: column;
+  }
+
+  .as-wizard-nav button {
+    width: 100%;
   }
 
   .as-wizard-title {
@@ -1155,6 +1454,31 @@
 
   .as-wizard-desc {
     font-size: 13px;
+  }
+
+  .as-wizard-indicator {
+    gap: 8px;
+  }
+
+  .as-wizard-step-label {
+    display: none;
+  }
+
+  .as-preview-stats {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .as-preview-stat {
+    padding: 10px 16px;
+  }
+
+  .as-preview-stat-number {
+    font-size: 20px;
+  }
+
+  .as-preview-buttons {
+    flex-direction: column;
   }
 
   .as-settings-dash {

@@ -25,9 +25,12 @@ var MessageType;
     // Web UI
     MessageType["UI_SUBSCRIBE"] = "UI_SUBSCRIBE";
     MessageType["UI_EVENT"] = "UI_EVENT";
+    // Client management
+    MessageType["CLIENT_LIST"] = "CLIENT_LIST";
+    MessageType["CLIENT_KICK"] = "CLIENT_KICK";
 })(MessageType || (exports.MessageType = MessageType = {}));
 /** Current protocol version. */
-exports.PROTOCOL_VERSION = 1;
+exports.PROTOCOL_VERSION = 2;
 /** Default server port. */
 exports.DEFAULT_PORT = 8443;
 /** UDP discovery port. */

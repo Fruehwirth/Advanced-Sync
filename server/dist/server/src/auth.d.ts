@@ -1,7 +1,8 @@
 /**
- * Server authentication: password verification + rate limiting.
+ * Server authentication: password verification, token management, rate limiting.
  */
 import type { ServerConfig } from "./config";
+import type { Storage } from "./storage";
 export declare class Auth {
     private passwordHash;
     private rateLimits;
@@ -21,4 +22,13 @@ export declare class Auth {
      * Used by dashboard middleware to validate the stored session token.
      */
     checkHash(hash: string): boolean;
+    /** Generate a cryptographically random 64-char hex token (32 random bytes). */
+    generateToken(): string;
+    /** Validate a session token against the database. Returns the session or null. */
+    validateToken(token: string, storage: Storage): {
+        clientId: string;
+        deviceName: string;
+    } | null;
+    /** Revoke all tokens for a given clientId. */
+    revokeToken(clientId: string, storage: Storage): void;
 }

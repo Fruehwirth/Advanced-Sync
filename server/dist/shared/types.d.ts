@@ -60,3 +60,26 @@ export interface ChangeRecord {
     deleted: boolean;
     sequence: number;
 }
+/** Authenticated client session (shared between server and plugin). */
+export interface ClientSession {
+    clientId: string;
+    deviceName: string;
+    ip: string;
+    firstSeen: number;
+    lastSeen: number;
+    isOnline: boolean;
+}
+/** Sync preview: what will happen when sync is applied. */
+export interface SyncPreview {
+    toDownload: {
+        path: string;
+        size: number;
+    }[];
+    toUpload: {
+        path: string;
+        size: number;
+    }[];
+    toDelete: {
+        path: string;
+    }[];
+}
