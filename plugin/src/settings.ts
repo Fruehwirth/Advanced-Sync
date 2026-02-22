@@ -3,7 +3,7 @@
  * Includes the full inline setup wizard (single password, sync preview) and the dashboard.
  */
 
-import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { App, Modal, PluginSettingTab, Setting, setIcon } from "obsidian";
 import { sha256String } from "./crypto/encryption";
 import { discoverServers, isDiscoveryAvailable } from "./network/discovery";
 import type { InitialSyncStrategy } from "./types";
@@ -54,6 +54,28 @@ function focusAndScroll(input: HTMLElement): void {
   }, { once: true });
 }
 
+/** Minimal in-renderer confirmation dialog — avoids Electron native dialogs which break focus. */
+class ConfirmModal extends Modal {
+  private message: string;
+  private onConfirm: () => void;
+
+  constructor(app: App, message: string, onConfirm: () => void) {
+    super(app);
+    this.message = message;
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen(): void {
+    this.contentEl.createEl("p", { text: this.message, attr: { style: "margin-bottom:16px;line-height:1.5;" } });
+    const actions = this.contentEl.createDiv({ attr: { style: "display:flex;gap:8px;justify-content:flex-end;" } });
+    actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+    const ok = actions.createEl("button", { text: "Reset", cls: "mod-warning" });
+    ok.addEventListener("click", () => { this.close(); this.onConfirm(); });
+  }
+
+  onClose(): void { this.contentEl.empty(); }
+}
+
 export class AdvancedSyncSettingsTab extends PluginSettingTab {
   plugin: AdvancedSyncPlugin;
 
@@ -68,6 +90,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   private wStep = 0;
   private wServerUrl = "";
   private wPassword = "";
+  private wPasswordValid: boolean | null = null; // null=unchecked, true=ok, false=wrong
   private wDeviceName = "";
   private wStrategy: InitialSyncStrategy = "merge";
   private wSyncPlugins = true;
@@ -103,6 +126,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.wSyncAllFileTypes = s.syncAllFileTypes ?? true;
     this.wErrorMsg = "";
     this.serverReachable = false;
+    this.wPasswordValid = null;
     this.previewPlan = null;
     this.previewError = "";
     this.previewLoading = false;
@@ -137,9 +161,11 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   // ================================================================
 
   private renderWizard(container: HTMLElement): void {
-    // Step indicator with labels
-    const indicator = container.createDiv("as-wizard-indicator");
     const stepNames = ["Welcome", "Server", "Password", "Device", "Sync", "Summary", "Preview", "Apply"];
+    const stepIcons = ["refresh-cw", "server", "lock", "monitor", "sliders", "list", "eye", "check-circle"];
+
+    // Step indicator (dots + labels)
+    const indicator = container.createDiv("as-wizard-indicator");
     for (let i = 0; i < TOTAL_STEPS; i++) {
       const stepEl = indicator.createDiv("as-wizard-step-container");
       const dot = stepEl.createSpan("as-wizard-dot");
@@ -148,14 +174,36 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       stepEl.createDiv({ text: stepNames[i], cls: "as-wizard-step-label" });
     }
 
-    // Step title
-    const stepTitle = container.createDiv("as-wizard-step-title");
-    stepTitle.textContent = `Step ${this.wStep + 1} of ${TOTAL_STEPS} — ${stepNames[this.wStep]}`;
-
-    // Card wrapper
+    // Card with in-card navigation row at the top
     const card = container.createDiv("as-wizard-card");
-    const body = card.createDiv("as-wizard-inline-body");
 
+    const cardNav = card.createDiv("as-wizard-card-nav");
+
+    // Back arrow (left)
+    if (this.wStep > 0 && this.wStep < 7) {
+      const backBtn = cardNav.createEl("button", { cls: "as-wizard-arrow-btn" });
+      setIcon(backBtn, "chevron-left");
+      backBtn.addEventListener("click", () => { this.wStep--; this.display(); });
+    } else {
+      cardNav.createDiv("as-wizard-arrow-placeholder");
+    }
+
+    // Step name + icon as big header (centre)
+    const titleEl = cardNav.createDiv("as-wizard-step-title-inline");
+    setIcon(titleEl.createSpan("as-wizard-step-title-icon"), stepIcons[this.wStep]);
+    titleEl.createSpan({ text: stepNames[this.wStep] });
+
+    // Next arrow (right) — steps 0-4 only
+    if (this.wStep < 5) {
+      const nextBtn = cardNav.createEl("button", { cls: "as-wizard-arrow-btn as-wizard-next-btn" });
+      setIcon(nextBtn, "chevron-right");
+      nextBtn.addEventListener("click", () => this.wNext());
+    } else {
+      cardNav.createDiv("as-wizard-arrow-placeholder");
+    }
+
+    // Body
+    const body = card.createDiv("as-wizard-inline-body");
     switch (this.wStep) {
       case 0: this.wRenderWelcome(body); break;
       case 1: this.wRenderFindServer(body); break;
@@ -165,21 +213,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       case 5: this.wRenderSummary(body); break;
       case 6: this.wRenderSyncPreview(body); break;
       case 7: this.wRenderApply(body); break;
-    }
-
-    // Nav buttons
-    const nav = container.createDiv("as-wizard-nav");
-
-    if (this.wStep > 0 && this.wStep < 7) {
-      const backBtn = nav.createEl("button", { text: "Back" });
-      backBtn.addEventListener("click", () => { this.wStep--; this.display(); });
-    } else {
-      nav.createDiv();
-    }
-
-    if (this.wStep < 5) {
-      const nextBtn = nav.createEl("button", { text: "Next", cls: "mod-cta" });
-      nextBtn.addEventListener("click", () => this.wNext());
     }
   }
 
@@ -191,25 +224,30 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       text: "This wizard will set up encrypted vault synchronization across your devices.",
       cls: "as-wizard-desc",
     });
-    const ul = body.createEl("ul", { cls: "as-wizard-features" });
-    ul.createEl("li", { text: "End-to-end encrypted — the server never sees your data" });
-    ul.createEl("li", { text: "Sync notes, plugins, and settings across all devices" });
-    ul.createEl("li", { text: "Real-time — changes appear on other devices within seconds" });
-    ul.createEl("li", { text: "Self-hosted — your data stays on your own server" });
+    const features: Array<{ icon: string; text: string }> = [
+      { icon: "lock",        text: "End-to-end encrypted — the server never sees your data" },
+      { icon: "refresh-cw",  text: "Sync notes, plugins, and settings across all devices" },
+      { icon: "zap",         text: "Real-time — changes appear on other devices within seconds" },
+      { icon: "server",      text: "Self-hosted — your data stays on your own server" },
+    ];
+    const list = body.createDiv("as-wizard-feature-list");
+    for (const f of features) {
+      const row = list.createDiv("as-wizard-feature-row");
+      const iconEl = row.createSpan("as-wizard-feature-icon");
+      setIcon(iconEl, f.icon);
+      row.createSpan({ text: f.text, cls: "as-wizard-feature-text" });
+    }
   }
 
   private wRenderFindServer(body: HTMLElement): void {
-    const titleRow = body.createDiv({ attr: { style: "display: flex; align-items: center; gap: 6px;" } });
-    titleRow.createEl("h3", { text: "Find Server", attr: { style: "margin: 0;" } });
-    const statusInline = titleRow.createSpan("as-server-status-inline");
-
     // Auto-discovery
     if (isDiscoveryAvailable()) {
       const scanRow = body.createDiv("as-scan-header");
       const spinner = scanRow.createDiv("as-scan-spinner");
       setIcon(spinner, "refresh-cw");
-      const scanLbl = scanRow.createSpan({ text: "Scanning all network interfaces...", cls: "as-scan-label" });
-      const listEl = body.createDiv("as-server-list");
+      const scanLbl = scanRow.createSpan({ text: "Scanning network...", cls: "as-scan-label" });
+      const listContainer = body.createDiv("as-server-list-container");
+      const listEl = listContainer.createDiv("as-server-list");
 
       discoverServers(5000).then((servers) => {
         spinner.remove();
@@ -242,8 +280,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     }
 
     // Manual entry
-    body.createEl("h4", { text: "Server Address", attr: { style: "margin: 14px 0 8px;" } });
-
     let initialHost = "";
     let initialPort = "8443";
     if (this.wServerUrl) {
@@ -252,11 +288,15 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     }
 
     const row = body.createDiv("as-field-group");
-    row.createEl("label", { text: "Host or IP", cls: "as-field-label" });
+
+    // Label row — "Host or IP" + inline ping status icon
+    const labelRow = row.createDiv("as-field-label-row");
+    labelRow.createEl("label", { text: "Host or IP", cls: "as-field-label" });
+    const statusInline = labelRow.createSpan("as-server-status-inline");
 
     const inputRow = row.createDiv("as-input-row");
     const hostInput = inputRow.createEl("input", {
-      type: "text", placeholder: "IP or URL",
+      type: "text", placeholder: "IP or hostname",
       cls: "as-input as-host-input",
     });
     hostInput.value = initialHost;
@@ -266,22 +306,16 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     const portInput = inputRow.createEl("input", {
       type: "text", placeholder: "8443",
       cls: "as-input as-port-input",
-      attr: { style: "width: 48px; flex-shrink: 0;" },
     });
     portInput.value = initialPort;
 
     const urlLabel = row.createDiv("as-url-label");
 
     const updateNextBtn = () => {
-      const nextBtn = this.containerEl.querySelector(".as-wizard-nav .mod-cta") as HTMLButtonElement | null;
+      const nextBtn = this.containerEl.querySelector(".as-wizard-next-btn") as HTMLButtonElement | null;
       if (nextBtn) {
-        if (this.serverReachable) {
-          nextBtn.disabled = false;
-          nextBtn.removeClass("as-btn-disabled");
-        } else {
-          nextBtn.disabled = true;
-          nextBtn.addClass("as-btn-disabled");
-        }
+        nextBtn.disabled = !this.serverReachable;
+        nextBtn.toggleClass("as-btn-disabled", !this.serverReachable);
       }
     };
 
@@ -365,21 +399,22 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   }
 
   private wRenderPassword(body: HTMLElement): void {
-    body.createEl("h3", { text: "Password" });
-
     const callout = body.createDiv("as-wizard-callout");
-    callout.textContent = "Enter the password for your sync server. This password also encrypts your vault data. Keep it safe — if you lose it, your data cannot be recovered.";
+    callout.textContent = "This password authenticates you with the server and encrypts your vault data. Keep it safe — if you lose it, your data cannot be recovered.";
 
     if (this.wErrorMsg) {
       body.createDiv({ text: this.wErrorMsg, cls: "as-error", attr: { style: "display:block; margin-bottom:8px;" } });
     }
 
     const g = body.createDiv("as-field-group");
-    g.createEl("label", { text: "Password", cls: "as-field-label" });
+    const labelRow = g.createDiv("as-field-label-row");
+    labelRow.createEl("label", { text: "Password", cls: "as-field-label" });
+    const pwStatus = labelRow.createSpan("as-server-status-inline");
+
     const wrapper = g.createDiv("as-password-wrapper");
     const input = wrapper.createEl("input", { type: "password", placeholder: "Server & encryption password", cls: "as-input as-password-input" });
     input.value = this.wPassword;
-    input.addEventListener("input", () => { this.wPassword = input.value; });
+
     const toggle = wrapper.createDiv("as-eye-toggle");
     setIcon(toggle, "eye");
     toggle.addEventListener("click", () => {
@@ -387,11 +422,66 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       input.type = hidden ? "text" : "password";
       toggle.empty(); setIcon(toggle, hidden ? "eye-off" : "eye");
     });
+
+    // Instant password validation against the server
+    let pwValidateTimer: ReturnType<typeof setTimeout> | null = null;
+    const validatePw = async () => {
+      const password = input.value;
+      if (!password || !this.wServerUrl) { pwStatus.empty(); return; }
+      pwStatus.empty();
+      const pinging = pwStatus.createSpan("as-status-pinging");
+      setIcon(pinging, "loader");
+      try {
+        const hash = await sha256String(password);
+        const res = await fetch(`${toHttpUrl(this.wServerUrl)}/api/ui-auth`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passwordHash: hash }),
+          signal: AbortSignal.timeout(5000),
+        });
+        this.wPasswordValid = res.ok;
+        pwStatus.empty();
+        if (res.ok) {
+          const ok = pwStatus.createSpan("as-status-ok");
+          setIcon(ok, "check");
+        } else {
+          const fail = pwStatus.createSpan("as-status-fail");
+          setIcon(fail, "x");
+        }
+      } catch {
+        this.wPasswordValid = null;
+        pwStatus.empty();
+      }
+      // Reflect on next button
+      const nextBtn = this.containerEl.querySelector(".as-wizard-next-btn") as HTMLButtonElement | null;
+      if (nextBtn) {
+        const blocked = this.wPasswordValid === false;
+        nextBtn.disabled = blocked;
+        nextBtn.toggleClass("as-btn-disabled", blocked);
+      }
+    };
+
+    input.addEventListener("input", () => {
+      this.wPassword = input.value;
+      this.wPasswordValid = null;
+      pwStatus.empty();
+      if (pwValidateTimer) clearTimeout(pwValidateTimer);
+      if (input.value) pwValidateTimer = setTimeout(validatePw, 600);
+    });
+
+    // Restore previous validation state visually
+    if (this.wPasswordValid === true) {
+      const ok = pwStatus.createSpan("as-status-ok"); setIcon(ok, "check");
+    } else if (this.wPasswordValid === false) {
+      const fail = pwStatus.createSpan("as-status-fail"); setIcon(fail, "x");
+    } else if (this.wPassword) {
+      setTimeout(validatePw, 100);
+    }
+
     focusAndScroll(input);
   }
 
   private wRenderDeviceName(body: HTMLElement): void {
-    body.createEl("h3", { text: "Device Name" });
     body.createEl("p", { text: "A name to identify this device on the server and in the sync log.", cls: "as-wizard-desc" });
 
     const g = body.createDiv("as-field-group");
@@ -403,7 +493,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   }
 
   private wRenderSyncSetup(body: HTMLElement): void {
-    body.createEl("h3", { text: "Sync Setup" });
 
     const allFiles = this.app.vault.getFiles();
     const vaultFiles = allFiles.filter(f => !f.path.startsWith(".obsidian/plugins/advanced-sync/"));
@@ -453,7 +542,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   }
 
   private wRenderSummary(body: HTMLElement): void {
-    body.createEl("h3", { text: "Ready to Connect" });
     body.createEl("p", { text: "Review your settings and connect to see a preview of changes.", cls: "as-wizard-desc" });
 
     const strategyLabels: Record<InitialSyncStrategy, string> = {
@@ -473,7 +561,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   }
 
   private wRenderSyncPreview(body: HTMLElement): void {
-    body.createEl("h3", { text: "Sync Preview" });
 
     if (this.previewLoading) {
       const loading = body.createDiv("as-preview-loading");
@@ -578,7 +665,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   }
 
   private wRenderApply(body: HTMLElement): void {
-    body.createEl("h3", { text: "Applying Changes" });
 
     const state = this.plugin.syncEngine.state;
     if (state === "idle") {
@@ -730,26 +816,15 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   // ================================================================
 
   private renderDashboard(container: HTMLElement): void {
-    // Header row
-    const headerRow = container.createDiv("as-settings-header");
-    const pillContainer = headerRow.createDiv();
-
-    const renderStatePill = (parent: HTMLElement) => {
-      parent.empty();
-      const state = this.plugin.syncEngine?.state ?? "disconnected";
-      const pill = parent.createDiv(`as-settings-state-pill as-settings-state-${state}`);
-      pill.createSpan("as-settings-state-dot");
-      pill.createSpan({ text: stateLabel(state) });
-    };
-    renderStatePill(pillContainer);
-
     // Dashboard section
     container.createDiv({ cls: "as-settings-section-label", text: "Dashboard" });
     const dash = container.createDiv("as-settings-dash");
 
-    // Sync activity card — uses unified renderer
+    // Sync activity card — badge in card header, content in card body
     const logCard = dash.createDiv("as-dash-card");
-    logCard.createDiv("as-dash-card-header").createSpan({ text: "Recent Changes", cls: "as-dash-card-title" });
+    const logCardHeader = logCard.createDiv("as-dash-card-header");
+    logCardHeader.createSpan({ text: "Recent Changes", cls: "as-dash-card-title" });
+    const logBadgeSlot = logCardHeader.createDiv();
     const logBody = logCard.createDiv("as-dash-log");
 
     const activityRenderer = new SyncActivityRenderer(logBody, {
@@ -763,6 +838,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       },
       getState: () => this.plugin.syncEngine?.state ?? "disconnected",
       maxHistoryItems: 15,
+      badgeContainer: logBadgeSlot,
     });
     activityRenderer.render();
 
@@ -788,9 +864,13 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
           cls: "as-dash-device-meta",
         });
         if (dev.isOnline && dev.clientId !== this.plugin.settings.clientId) {
-          const kickBtn = row.createEl("button", { text: "Kick", cls: "as-btn-sm as-btn-kick" });
+          const kickBtn = row.createEl("button", { cls: "as-btn-kick-icon" });
+          setIcon(kickBtn, "x");
+          kickBtn.title = `Remove ${dev.deviceName}`;
           kickBtn.addEventListener("click", () => {
-            this.plugin.syncEngine.kickClient(dev.clientId);
+            if (window.confirm(`Remove "${dev.deviceName}" from sync?\n\nThey will be disconnected and need to re-enter the password to reconnect.`)) {
+              this.plugin.syncEngine.kickClient(dev.clientId);
+            }
           });
         } else if (dev.isOnline) {
           row.createSpan({ text: "This device", cls: "as-badge-online" });
@@ -801,7 +881,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
     // Wire up live callbacks
     this.notifyDataChanged = () => {
-      renderStatePill(pillContainer);
       activityRenderer.render();
     };
     this.notifyProgressChanged = (current, total, detail) => {
@@ -856,14 +935,21 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     new Setting(container).setName("Reset sync state").setDesc("Clear all local sync state. Your vault files are not deleted.")
       .addButton(btn => {
         btn.setButtonText("Reset").setWarning();
-        btn.onClick(async () => {
-          if (!window.confirm("Reset local sync state?\n\nYour vault files are not deleted. You will need to run the setup wizard again.")) return;
-          this.plugin.syncEngine.disconnect();
-          const clientId = this.plugin.settings.clientId;
-          Object.assign(this.plugin.settings, { clientId, deviceName: "", serverUrl: "", authToken: "", encryptionKeyB64: "", vaultSalt: "", setupComplete: false, lastSequence: 0, serverId: "" });
-          await this.plugin.saveSettings();
-          this.resetWizard();
-          this.display();
+        btn.onClick(() => {
+          new ConfirmModal(
+            this.app,
+            "All sync settings and credentials will be deleted. Your vault files are not affected.",
+            async () => {
+              this.plugin.syncEngine.disconnect();
+              try {
+                const dataPath = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}/data.json`;
+                await this.plugin.app.vault.adapter.remove(dataPath);
+              } catch { /* file may not exist */ }
+              await this.plugin.loadSettings();
+              this.resetWizard();
+              this.display();
+            }
+          ).open();
         });
       });
   }

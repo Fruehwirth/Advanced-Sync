@@ -10,5 +10,5 @@ services:
       - ./data:/data
     environment:
       - SERVER_PASSWORD=changeme
-    user: "1000:1000"   # run as michael so data files are deletable without sudo
+    user: "1000:1000"   # run as the host user so data files are deletable without sudo
     restart: unless-stopped

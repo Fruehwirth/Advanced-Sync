@@ -54,6 +54,8 @@ export interface SyncActivityRendererOptions {
   getHistory: () => SyncHistoryEntry[];
   getState: () => SyncState;
   maxHistoryItems?: number;
+  /** If provided, the status badge is rendered here instead of inside the scroll container. */
+  badgeContainer?: HTMLElement;
 }
 
 export class SyncActivityRenderer {
@@ -75,8 +77,8 @@ export class SyncActivityRenderer {
   render(): void {
     this.container.empty();
 
-    // State badge
-    this.badgeEl = this.container.createDiv("as-activity-badge-container");
+    // State badge — render in the provided external slot, or inline at the top
+    this.badgeEl = this.options.badgeContainer ?? this.container.createDiv("as-activity-badge-container");
     this.renderBadge();
 
     // Progress bar
@@ -130,6 +132,8 @@ export class SyncActivityRenderer {
   /** Destroy and clean up. */
   destroy(): void {
     this.container.empty();
+    // If the badge lives in an external container, clear it too
+    if (this.options.badgeContainer) this.options.badgeContainer.empty();
     this.badgeEl = null;
     this.activeSection = null;
     this.historySection = null;

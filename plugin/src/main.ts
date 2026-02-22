@@ -108,7 +108,10 @@ export default class AdvancedSyncPlugin extends Plugin {
     );
 
     // Ribbon icon for mobile
-    this.addRibbonIcon("refresh-cw", "Sync Status", () => this.activateHistoryView());
+    // Ribbon icon only on mobile — desktop uses the status bar item instead
+    if (Platform.isMobile) {
+      this.addRibbonIcon("refresh-cw", "Sync Status", () => this.activateHistoryView());
+    }
 
     this.addCommand({ id: "connect",      name: "Connect to sync server",     callback: () => this.connectToServer() });
     this.addCommand({ id: "disconnect",   name: "Disconnect from sync server", callback: () => this.disconnectFromServer() });

@@ -37,9 +37,10 @@ export class SyncHistoryView extends ItemView {
     container.empty();
     container.addClass("as-history-view");
 
-    // Header
+    // Header — title on the left, status badge on the right
     const header = container.createDiv("as-history-view-header");
     header.createSpan({ text: "Recent Changes", cls: "as-history-view-title" });
+    const badgeSlot = header.createDiv();
 
     // Renderer container
     const rendererContainer = container.createDiv("as-history-view-content");
@@ -48,6 +49,7 @@ export class SyncHistoryView extends ItemView {
       getActiveItems: this.getActiveItems,
       getHistory: this.getHistory,
       getState: this.getState,
+      badgeContainer: badgeSlot,
     });
     this.renderer.render();
   }

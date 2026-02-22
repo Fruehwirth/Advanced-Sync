@@ -61,7 +61,8 @@ export interface SyncPlan {
 }
 
 const MAX_HISTORY = 50;
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 20;            // Files per yield-to-event-loop during manifest build
+const MAX_CONCURRENT_DOWNLOADS = 3; // Max simultaneous decrypt+write ops on mobile
 
 /** Decrypted file metadata stored locally for sync comparison. */
 interface LocalFileInfo {
@@ -95,6 +96,15 @@ export class SyncEngine {
   private _forcePull = false;
   /** Count of downloads that failed during the current sync batch. */
   private failedDownloads = 0;
+  /** Queued fileIds waiting to be requested — drained by requestNextDownloads(). */
+  private downloadQueue: string[] = [];
+  /** How many download+decrypt operations are currently in flight. */
+  private activeDownloadCount = 0;
+  /** Throttle timer for onActivityChange — prevents re-render flood during bulk sync. */
+  private activityChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  private activityChangePending = false;
+  /** Whether a bulk history change is deferred until sync completes. */
+  private bulkHistoryPending = false;
   /** The actual current state, including "idle" which ConnectionManager never emits. */
   private _state: SyncState = "disconnected";
   /** Rolling log of recently synced file changes (newest first). */
@@ -184,6 +194,11 @@ export class SyncEngine {
     this.pendingSequence = null;
     this._forcePull = false;
     this.failedDownloads = 0;
+    this.downloadQueue = [];
+    this.activeDownloadCount = 0;
+    if (this.activityChangeTimer) { clearTimeout(this.activityChangeTimer); this.activityChangeTimer = null; }
+    this.activityChangePending = false;
+    this.bulkHistoryPending = false;
     this._state = "disconnected";
     this.fileWatcher.stop();
     this.connection.disconnect();
@@ -314,7 +329,7 @@ export class SyncEngine {
         timestamp: Date.now(),
       });
     }
-    this.onActivityChange();
+    this.scheduleActivityChange();
 
     const total = plan.toUpload.length + plan.toDelete.length + plan.toDownload.length;
     let current = 0;
@@ -334,24 +349,24 @@ export class SyncEngine {
     const uploadItems = this.activeItems.filter(i => i.direction === "upload");
     await this.processWithYield(uploadItems, async (item, index) => {
       item.status = "active";
-      this.onActivityChange();
+      this.scheduleActivityChange();
       current++;
       this.onProgress(current, total, `Uploading ${index + 1}/${uploadItems.length}: ${item.filename}`);
       await this.uploadFile(item.path);
       item.status = "completed";
-      this.onActivityChange();
+      this.scheduleActivityChange();
     });
 
     // Process deletes with yield
     const deleteItems = this.activeItems.filter(i => i.direction === "delete");
     await this.processWithYield(deleteItems, async (item, index) => {
       item.status = "active";
-      this.onActivityChange();
+      this.scheduleActivityChange();
       current++;
       this.onProgress(current, total, `Deleting ${index + 1}/${deleteItems.length}: ${item.filename}`);
       await this.deleteLocalFile(item.path);
       item.status = "completed";
-      this.onActivityChange();
+      this.scheduleActivityChange();
     });
 
     if (plan.toDownload.length === 0) {
@@ -366,15 +381,14 @@ export class SyncEngine {
       return;
     }
 
-    // Request all downloads
+    // Queue downloads — only MAX_CONCURRENT_DOWNLOADS in flight at once
     this.totalInitialDownloads = plan.toDownload.length;
     this.pendingInitialDownloads = plan.toDownload.length;
     this.failedDownloads = 0;
+    this.downloadQueue = plan.toDownload.map(e => e.fileId);
+    this.activeDownloadCount = 0;
     this.onProgress(0, plan.toDownload.length, `Downloading 0 / ${plan.toDownload.length} files`);
-
-    for (const entry of plan.toDownload) {
-      this.connection.send({ type: MessageType.FILE_DOWNLOAD, fileId: entry.fileId });
-    }
+    this.requestNextDownloads();
   }
 
   private setupConnectionCallbacks(): void {
@@ -478,6 +492,49 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * Request the next batch of downloads from the queue (sliding-window concurrency).
+   * Caps in-flight decrypt+write ops at MAX_CONCURRENT_DOWNLOADS to keep mobile responsive.
+   */
+  private requestNextDownloads(): void {
+    while (this.activeDownloadCount < MAX_CONCURRENT_DOWNLOADS && this.downloadQueue.length > 0) {
+      const fileId = this.downloadQueue.shift()!;
+      this.activeDownloadCount++;
+      this.connection.send({ type: MessageType.FILE_DOWNLOAD, fileId });
+    }
+  }
+
+  /**
+   * Throttled activity change notification — fires immediately, then at most once per 150 ms.
+   * Prevents re-rendering the sidebar on every single downloaded file.
+   */
+  private scheduleActivityChange(): void {
+    if (this.activityChangeTimer !== null) {
+      this.activityChangePending = true;
+      return;
+    }
+    this.onActivityChange();
+    this.activityChangeTimer = setTimeout(() => {
+      this.activityChangeTimer = null;
+      if (this.activityChangePending) {
+        this.activityChangePending = false;
+        this.scheduleActivityChange();
+      }
+    }, 150);
+  }
+
+  /**
+   * Fire onHistoryChange immediately during incremental sync, but defer during bulk
+   * initial sync so we don't re-render the history list for every single file.
+   */
+  private notifyHistoryChange(isBulk = false): void {
+    if (isBulk) {
+      this.bulkHistoryPending = true;
+    } else {
+      this.onHistoryChange();
+    }
+  }
+
   /** Build a manifest of all local files for sync comparison. */
   async buildLocalManifest(): Promise<void> {
     if (!this.vaultKey) return;
@@ -551,7 +608,8 @@ export class SyncEngine {
     try {
       const listing = await adapter.list(dir);
 
-      for (const filePath of listing.files) {
+      for (let i = 0; i < listing.files.length; i++) {
+        const filePath = listing.files[i];
         if (this.fileWatcher.shouldExclude(filePath)) continue;
         const fileId = await deriveFileId(filePath, this.vaultKey!);
         if (this.localManifest.has(fileId)) continue;
@@ -562,6 +620,11 @@ export class SyncEngine {
         this.localManifest.set(fileId, {
           path: filePath, fileId, mtime: stat.mtime, size: stat.size, contentHash: "",
         });
+
+        // Yield to event loop every BATCH_SIZE files to keep UI responsive
+        if ((i + 1) % BATCH_SIZE === 0) {
+          await new Promise(r => setTimeout(r, 0));
+        }
       }
 
       for (const subdir of listing.folders) {
@@ -678,7 +741,7 @@ export class SyncEngine {
         direction: "download", status: "pending", fileSize: entry.size, timestamp: Date.now(),
       });
     }
-    if (total > 0) this.onActivityChange();
+    if (total > 0) this.scheduleActivityChange();
 
     let current = 0;
 
@@ -697,24 +760,24 @@ export class SyncEngine {
     const uploadItems = this.activeItems.filter(i => i.direction === "upload");
     await this.processWithYield(uploadItems, async (item, index) => {
       item.status = "active";
-      this.onActivityChange();
+      this.scheduleActivityChange();
       current++;
       this.onProgress(current, total, `Uploading ${index + 1}/${uploadItems.length}: ${item.filename}`);
       await this.uploadFile(item.path);
       item.status = "completed";
-      this.onActivityChange();
+      this.scheduleActivityChange();
     });
 
     // Process deletes with yield
     const deleteItems = this.activeItems.filter(i => i.direction === "delete");
     await this.processWithYield(deleteItems, async (item, index) => {
       item.status = "active";
-      this.onActivityChange();
+      this.scheduleActivityChange();
       current++;
       this.onProgress(current, total, `Deleting ${index + 1}/${deleteItems.length}: ${item.filename}`);
       await this.deleteLocalFile(item.path);
       item.status = "completed";
-      this.onActivityChange();
+      this.scheduleActivityChange();
     });
 
     if (toDownload.length === 0) {
@@ -729,14 +792,14 @@ export class SyncEngine {
       return;
     }
 
+    // Queue downloads — only MAX_CONCURRENT_DOWNLOADS in flight at once
     this.totalInitialDownloads = toDownload.length;
     this.pendingInitialDownloads = toDownload.length;
     this.failedDownloads = 0;
+    this.downloadQueue = toDownload.map(e => e.fileId);
+    this.activeDownloadCount = 0;
     this.onProgress(0, toDownload.length, `Downloading 0 / ${toDownload.length} files`);
-
-    for (const entry of toDownload) {
-      this.connection.send({ type: MessageType.FILE_DOWNLOAD, fileId: entry.fileId });
-    }
+    this.requestNextDownloads();
   }
 
   /** Record a file change in the history log. */
@@ -751,7 +814,7 @@ export class SyncEngine {
           this.history.splice(i, 1);
           this.history.unshift(entry);
         }
-        this.onHistoryChange();
+        this.notifyHistoryChange(this.pendingInitialDownloads > 0);
         return;
       }
     }
@@ -763,7 +826,7 @@ export class SyncEngine {
       count: 1,
     });
     if (this.history.length > MAX_HISTORY) this.history.pop();
-    this.onHistoryChange();
+    this.notifyHistoryChange(this.pendingInitialDownloads > 0);
   }
 
   /** Upload a local file to the server. */
@@ -915,7 +978,11 @@ export class SyncEngine {
           `Downloading ${received} / ${this.totalInitialDownloads} files`
         );
 
-        if (this.pendingInitialDownloads === 0) {
+        // Free the slot and pull the next queued download
+          this.activeDownloadCount = Math.max(0, this.activeDownloadCount - 1);
+          this.requestNextDownloads();
+
+          if (this.pendingInitialDownloads === 0) {
           this.totalInitialDownloads = 0;
 
           if (this.pendingSequence !== null) {
@@ -933,6 +1000,11 @@ export class SyncEngine {
           this._state = "idle";
           this.activeItems.length = 0;
           this.onActivityChange();
+          // Flush deferred history notifications now that bulk sync is done
+          if (this.bulkHistoryPending) {
+            this.bulkHistoryPending = false;
+            this.onHistoryChange();
+          }
           this.onStateChange("idle", "Synced");
         }
       }

@@ -149,10 +149,38 @@
   font-weight: 500;
 }
 
-.as-wizard-features {
-  margin: 8px 0 0 16px;
+.as-wizard-feature-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 0;
+  list-style: none;
+  padding: 0;
+}
+
+.as-wizard-feature-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.as-wizard-feature-icon {
+  display: flex;
+  align-items: center;
+  color: var(--interactive-accent);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.as-wizard-feature-icon svg,
+.as-wizard-feature-icon .svg-icon {
+  width: 15px !important;
+  height: 15px !important;
+}
+
+.as-wizard-feature-text {
+  font-size: 13px;
   color: var(--text-muted);
-  line-height: 1.8;
+  line-height: 1.5;
 }
 
 .as-wizard-nav {
@@ -457,21 +485,89 @@
 
 /* --- Wizard Card Container (centered layout) --- */
 .as-wizard-card {
-  max-width: 500px;
+  max-width: 420px;
   margin: 0 auto;
-  padding: 32px;
+  padding: 20px 28px 28px;
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
 }
 
 .as-settings-container .as-wizard-card {
-  margin-top: 24px;
+  margin-top: 16px;
 }
 
 /* Constrain field widths inside card */
 .as-wizard-card .as-field-group {
   max-width: 400px;
+}
+
+/* In-card top navigation row (back arrow / step label / next arrow) */
+.as-wizard-card-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.as-wizard-arrow-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-modifier-hover);
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+}
+.as-wizard-arrow-btn:hover { background: var(--background-modifier-active-hover, var(--background-modifier-hover)); color: var(--text-normal); }
+.as-wizard-arrow-btn.as-btn-disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+/* Force icon size — Obsidian's global svg-icon style can otherwise make them tiny */
+.as-wizard-arrow-btn svg,
+.as-wizard-arrow-btn .svg-icon {
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px;
+  min-height: 16px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.as-wizard-arrow-placeholder {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+.as-wizard-step-title-inline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-normal);
+  flex: 1;
+  padding: 0 8px;
+  line-height: 1.2;
+}
+
+.as-wizard-step-title-icon {
+  display: flex;
+  align-items: center;
+  color: var(--interactive-accent);
+  flex-shrink: 0;
+}
+.as-wizard-step-title-icon svg,
+.as-wizard-step-title-icon .svg-icon {
+  width: 18px !important;
+  height: 18px !important;
 }
 
 /* Step indicator with labels */
@@ -492,17 +588,9 @@
   text-overflow: ellipsis;
 }
 
-/* Current step title shown above the card */
-.as-wizard-step-title {
-  text-align: center;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  margin-bottom: 12px;
-}
-
 /* Info callout for important notes */
 .as-wizard-callout {
+  max-width: 400px;
   padding: 12px 16px;
   background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
   border-left: 3px solid var(--interactive-accent);
@@ -512,6 +600,26 @@
   margin-bottom: 16px;
   line-height: 1.5;
 }
+
+/* Label row — label + inline status icon side by side */
+.as-field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.as-field-label-row .as-field-label { margin-bottom: 0; }
+
+/* Discovered servers container */
+.as-server-list-container {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.as-server-list-container .as-server-list { padding: 4px; }
+.as-server-list-container .as-server-item { border-radius: 6px; margin-bottom: 2px; }
+.as-server-list-container .as-server-item:last-child { margin-bottom: 0; }
 
 /* Inline wizard inside settings tab */
 .as-wizard-inline-body {
@@ -526,6 +634,13 @@
   color: var(--text-faint);
   padding: 0 4px;
   align-self: center;
+}
+
+.as-port-input {
+  width: 75px !important;
+  max-width: 75px;
+  flex: none;
+  text-align: center;
 }
 
 /* ============================================================
@@ -630,8 +745,11 @@
 }
 
 .as-dash-card-header {
-  padding: 10px 14px 8px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .as-dash-card-title {
@@ -1408,15 +1526,27 @@
   margin-top: 2px;
 }
 
-/* Kick button (dashboard devices) */
-.as-btn-kick {
-  color: var(--color-red, #e05252);
-  border-color: color-mix(in srgb, var(--color-red, #e05252) 30%, transparent);
+/* Kick icon button (dashboard devices) */
+.as-btn-kick-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-faint);
+  transition: color 0.12s, background 0.12s;
+  flex-shrink: 0;
 }
-.as-btn-kick:hover {
+.as-btn-kick-icon:hover {
+  color: var(--color-red, #e05252);
   background: color-mix(in srgb, var(--color-red, #e05252) 10%, transparent);
-  color: var(--color-red, #e05252);
 }
+.as-btn-kick-icon svg { width: 13px; height: 13px; }
 
 /* ============================================================
    Mobile Overrides
@@ -1427,25 +1557,9 @@
   }
 
   .as-wizard-card {
-    padding: 20px 16px;
+    padding: 16px;
     border-radius: 8px;
     margin-top: 12px;
-  }
-
-  .as-wizard-body,
-  .as-wizard-inline-body {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
-  .as-wizard-nav {
-    padding-left: 16px;
-    padding-right: 16px;
-    flex-direction: column;
-  }
-
-  .as-wizard-nav button {
-    width: 100%;
   }
 
   .as-wizard-title {

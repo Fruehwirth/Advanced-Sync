@@ -45,7 +45,7 @@ The sync server runs as a Docker container. A minimal `docker-compose.yml`:
 ```yaml
 services:
   advanced-sync:
-    image: ghcr.io/fruehwirth/advanced-sync-server:latest
+    image: your-dockerhub-username/advanced-sync:latest
     ports:
       - "8443:8443"
     environment:
