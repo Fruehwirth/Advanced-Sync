@@ -92,6 +92,16 @@ Search for **Advanced Sync** in **Settings → Community plugins**.
 
 ---
 
+## Showcase
+
+![dashboard](https://raw.githubusercontent.com/Fruehwirth/Advanced-Sync/refs/heads/main/images/dashboard.png)
+![Wizard](https://raw.githubusercontent.com/Fruehwirth/Advanced-Sync/refs/heads/main/images/setup-wizard.png)
+![sync-tab](https://raw.githubusercontent.com/Fruehwirth/Advanced-Sync/refs/heads/main/images/synctab.png)
+
+
+
+---
+
 ## Security
 
 | Layer | Mechanism |
