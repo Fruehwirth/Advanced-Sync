@@ -1,5 +1,20 @@
+# Plugin dependencies
 node_modules/
+
+# Plugin build output — committed only on releases via GitHub Actions
 main.js
+main.js.map
+
+# Server
+server/node_modules/
+server/dist/
+server/data/
+
+# Runtime
 data.json
-/server/data/
-DOCUMENTATION.md
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db

@@ -63,7 +63,7 @@ const context = await esbuild.context({
     "utf-8-validate",
   ],
   alias: {
-    "@vault-sync/shared": path.resolve(__dirname, "../shared"),
+    "@vault-sync/shared": path.resolve(__dirname, "shared"),
   },
   format: "cjs",
   target: "es2018",
