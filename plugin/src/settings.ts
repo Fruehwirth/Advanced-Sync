@@ -6,7 +6,6 @@
 import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
 import { sha256String } from "./crypto/encryption";
 import { discoverServers, isDiscoveryAvailable } from "./network/discovery";
-import { MessageType, PROTOCOL_VERSION } from "@vault-sync/shared/protocol";
 import type { InitialSyncStrategy } from "./types";
 import type AdvancedSyncPlugin from "./main";
 
@@ -38,6 +37,11 @@ function stateLabel(state: string): string {
   return map[state] ?? state;
 }
 
+const DIRECTION_ICONS: Record<string, string> = {
+  upload: "arrow-up", download: "arrow-down", delete: "trash-2",
+  connect: "wifi", disconnect: "wifi-off", error: "alert-triangle",
+};
+
 function logLabel(direction: string): string {
   const map: Record<string, string> = {
     upload: "Uploaded", download: "Downloaded", delete: "Deleted",
@@ -57,6 +61,11 @@ function focusAndScroll(input: HTMLElement): void {
 export class AdvancedSyncSettingsTab extends PluginSettingTab {
   plugin: AdvancedSyncPlugin;
 
+  /** Called by main.ts when history or state changes — re-renders live dashboard parts. */
+  notifyDataChanged: (() => void) | null = null;
+  /** Called by main.ts when sync progress updates — updates the dashboard progress bar. */
+  notifyProgressChanged: ((current: number, total: number, detail: string) => void) | null = null;
+
   // ---- Wizard state (persists while the settings tab instance lives) ----
   private wStep = 0;
   private wServerUrl = "";
@@ -69,6 +78,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   private wSyncPlugins = true;
   private wSyncSettings = true;
   private wSyncWorkspace = false;
+  private wSyncAllFileTypes = true;
   private wErrorMsg = "";
   private serverReachable = false;
   private pingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -94,6 +104,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.wSyncPlugins = s.syncPlugins;
     this.wSyncSettings = s.syncSettings;
     this.wSyncWorkspace = s.syncWorkspace;
+    this.wSyncAllFileTypes = s.syncAllFileTypes ?? true;
     this.wErrorMsg = "";
     this.serverReachable = false;
   }
@@ -107,6 +118,8 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       clearTimeout(this.pingDebounceTimer);
       this.pingDebounceTimer = null;
     }
+    this.notifyDataChanged = null;
+    this.notifyProgressChanged = null;
   }
 
   display(): void {
@@ -354,10 +367,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     body.createEl("h3", { text: "Server Password" });
     body.createEl("p", { text: "Enter the password configured on your sync server (SERVER_PASSWORD in docker-compose.yml).", cls: "as-wizard-desc" });
 
-    if (this.wErrorMsg) {
-      body.createDiv({ text: this.wErrorMsg, cls: "as-auth-error" });
-    }
-
     const g = body.createDiv("as-field-group");
     g.createEl("label", { text: "Server Password", cls: "as-field-label" });
     const wrapper = g.createDiv("as-password-wrapper");
@@ -463,6 +472,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     // Sync toggles
     const toggleSection = body.createDiv("as-wizard-toggles");
     toggleSection.createDiv({ text: "What to sync", cls: "as-wizard-toggles-title" });
+    this.addWizardToggle(toggleSection, "Sync all file types", "Sync all files (off = only .md notes)", this.wSyncAllFileTypes, v => { this.wSyncAllFileTypes = v; });
     this.addWizardToggle(toggleSection, "Sync plugins", "Sync installed plugins (.obsidian/plugins/)", this.wSyncPlugins, v => { this.wSyncPlugins = v; });
     this.addWizardToggle(toggleSection, "Sync settings", "Sync Obsidian settings (appearance, hotkeys, etc.)", this.wSyncSettings, v => { this.wSyncSettings = v; });
     this.addWizardToggle(toggleSection, "Sync workspace", "Sync workspace layout and open files", this.wSyncWorkspace, v => { this.wSyncWorkspace = v; });
@@ -513,21 +523,10 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       case 1:
         if (!this.wServerUrl || !this.serverReachable) return;
         break;
-      case 2: {
+      case 2:
         if (!this.wServerPassword) return;
         this.wServerPasswordHash = await sha256String(this.wServerPassword);
-        // Validate password via temporary WS handshake
-        const nextBtn = this.containerEl.querySelector(".as-wizard-nav .mod-cta") as HTMLButtonElement | null;
-        if (nextBtn) { nextBtn.textContent = "Validating..."; nextBtn.addClass("as-btn-loading"); }
-        const authResult = await this.validateServerPassword();
-        if (nextBtn) { nextBtn.textContent = "Next"; nextBtn.removeClass("as-btn-loading"); }
-        if (!authResult.ok) {
-          this.wErrorMsg = authResult.reason || "Authentication failed — check password.";
-          this.display();
-          return;
-        }
         break;
-      }
       case 3:
         if (!this.wEncPass) { this.wErrorMsg = "Password cannot be empty."; this.display(); return; }
         if (this.wEncPass !== this.wEncPassConfirm) { this.wErrorMsg = "Passwords do not match."; this.display(); return; }
@@ -540,61 +539,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.display();
   }
 
-  /** Quick WS handshake to validate the server password. */
-  private validateServerPassword(): Promise<{ ok: boolean; reason?: string }> {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        ws.close();
-        resolve({ ok: false, reason: "Connection timed out." });
-      }, 8000);
-
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(this.wServerUrl);
-      } catch {
-        clearTimeout(timeout);
-        resolve({ ok: false, reason: "Could not connect to server." });
-        return;
-      }
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({
-          type: MessageType.AUTH,
-          clientId: "__wizard_test__",
-          deviceName: "Wizard Test",
-          passwordHash: this.wServerPasswordHash,
-          protocolVersion: PROTOCOL_VERSION,
-        }));
-      };
-
-      ws.onmessage = (ev) => {
-        clearTimeout(timeout);
-        try {
-          const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "{}");
-          if (msg.type === MessageType.AUTH_OK) {
-            ws.close();
-            resolve({ ok: true });
-          } else if (msg.type === MessageType.AUTH_FAIL) {
-            ws.close();
-            resolve({ ok: false, reason: msg.reason || "Invalid password." });
-          }
-        } catch {
-          ws.close();
-          resolve({ ok: false, reason: "Unexpected server response." });
-        }
-      };
-
-      ws.onerror = () => {
-        clearTimeout(timeout);
-        resolve({ ok: false, reason: "Connection error." });
-      };
-
-      ws.onclose = () => {
-        clearTimeout(timeout);
-      };
-    });
-  }
-
   private async wFinish(): Promise<void> {
     Object.assign(this.plugin.settings, {
       serverUrl:           this.wServerUrl,
@@ -604,6 +548,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       syncPlugins:         this.wSyncPlugins,
       syncSettings:        this.wSyncSettings,
       syncWorkspace:       this.wSyncWorkspace,
+      syncAllFileTypes:    this.wSyncAllFileTypes,
       setupComplete:       true,
     });
     await this.plugin.saveSettings();
@@ -629,68 +574,61 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     };
     renderStatePill(pillContainer);
 
-    const headerBtns = headerRow.createDiv("as-settings-header-btns");
-    const wizBtn = headerBtns.createEl("button", { cls: "as-btn-sm" });
-    setIcon(wizBtn.createSpan(), "wand");
-    wizBtn.createSpan({ text: "Re-run wizard" });
-    wizBtn.addEventListener("click", () => { this.resetWizard(); this.display(); });
-
     // Dashboard section
     container.createDiv({ cls: "as-settings-section-label", text: "Dashboard" });
     const dash = container.createDiv("as-settings-dash");
 
-    // Sync log
+    // Sync log card
     const logCard = dash.createDiv("as-dash-card");
     logCard.createDiv("as-dash-card-header").createSpan({ text: "Recent Changes", cls: "as-dash-card-title" });
+
+    // Progress bar (shown while syncing, hidden otherwise)
+    const progEl = logCard.createDiv("as-history-view-progress");
+    progEl.style.display = "none";
+    const progInner = progEl.createDiv("as-history-view-progress-inner");
+    const progBar = progInner.createDiv("as-history-view-progress-bar");
+    const progText = progEl.createDiv("as-history-view-progress-text");
+
     const logBody = logCard.createDiv("as-dash-log");
 
     const renderHistory = () => {
       logBody.empty();
-      const history = this.plugin.syncEngine?.history ?? [];
+      let history = this.plugin.syncEngine?.history ?? [];
+      if (this.plugin.settings.hideObsidianInHistory) {
+        history = history.filter(e => !e.path.startsWith(".obsidian/"));
+      }
       if (history.length === 0) {
         logBody.createDiv({ text: "No changes yet", cls: "as-dash-empty" });
       } else {
         for (const entry of history.slice(0, 15)) {
-          const row = logBody.createDiv("as-dash-log-row");
-          row.createSpan({ cls: `as-dash-log-dot as-log-${entry.direction}` });
-          const info = row.createDiv("as-dash-log-info");
-          const nameRow = info.createDiv("as-dash-log-name-row");
-          nameRow.createSpan({ text: entry.filename || logLabel(entry.direction), cls: "as-dash-log-name" });
-          if (entry.count > 1) nameRow.createSpan({ text: `×${entry.count}`, cls: "as-popup-history-count" });
+          const row = logBody.createDiv("as-history-view-row");
+          const icon = row.createSpan("as-history-view-icon");
+          icon.addClass(`as-dir-${entry.direction}`);
+          setIcon(icon, DIRECTION_ICONS[entry.direction] ?? "arrow-right");
+          const info = row.createDiv("as-history-view-info");
+          const nameRow = info.createDiv("as-history-view-name-row");
+          nameRow.createSpan({ text: entry.filename || logLabel(entry.direction), cls: "as-history-view-name" });
+          if (entry.count > 1) nameRow.createSpan({ text: `×${entry.count}`, cls: "as-history-view-count" });
           if (["upload","download","delete"].includes(entry.direction)) {
-            info.createSpan({ text: entry.path, cls: "as-dash-log-path" });
+            info.createDiv({ text: entry.path, cls: "as-history-view-path" });
           }
-          row.createSpan({ text: formatTimeAgo(entry.timestamp), cls: "as-dash-log-time" });
+          row.createSpan({ text: formatTimeAgo(entry.timestamp), cls: "as-history-view-time" });
         }
       }
     };
     renderHistory();
 
-    // Periodic refresh of dashboard header + history
-    if (this.dashboardRefreshInterval) clearInterval(this.dashboardRefreshInterval);
-    this.dashboardRefreshInterval = setInterval(() => {
-      renderStatePill(pillContainer);
-      renderHistory();
-    }, 5000);
-
-    // Also listen to sync engine state changes for immediate pill update
-    const prevCallback = this.plugin.syncEngine?.onStateChange;
-    if (this.plugin.syncEngine) {
-      const origCallback = this.plugin.syncEngine.onStateChange;
-      this.plugin.syncEngine.onStateChange = (state, detail) => {
-        origCallback(state, detail);
-        renderStatePill(pillContainer);
-        renderHistory();
-      };
-    }
-
     // Devices
     const devCard = dash.createDiv("as-dash-card");
     devCard.createDiv("as-dash-card-header").createSpan({ text: "Devices", cls: "as-dash-card-title" });
     const devBody = devCard.createDiv("as-dash-devices");
-    devBody.createDiv({ text: "Loading...", cls: "as-dash-empty" });
 
-    if (this.plugin.settings.serverUrl) {
+    const renderDevices = () => {
+      if (!this.plugin.settings.serverUrl) {
+        devBody.empty();
+        devBody.createDiv({ text: "Not configured", cls: "as-dash-empty" });
+        return;
+      }
       fetch(`${toHttpUrl(this.plugin.settings.serverUrl)}/api/clients`)
         .then(r => r.json())
         .then((data: { online: any[]; offline: any[] }) => {
@@ -710,7 +648,37 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
           }
         })
         .catch(() => { devBody.empty(); devBody.createDiv({ text: "Could not reach server", cls: "as-dash-empty" }); });
-    }
+    };
+    devBody.createDiv({ text: "Loading...", cls: "as-dash-empty" });
+    renderDevices();
+
+    // Expose immediate refresh callback for main.ts to call on history/state change
+    this.notifyDataChanged = () => {
+      renderStatePill(pillContainer);
+      renderHistory();
+    };
+    this.notifyProgressChanged = (current, total, detail) => {
+      if (total === 0 || current >= total) {
+        progEl.style.display = "none";
+        progBar.style.width = "0%";
+      } else {
+        progEl.style.display = "block";
+        const pct = Math.round((current / total) * 100);
+        progBar.style.width = `${pct}%`;
+        const remaining = total - current;
+        progText.textContent = remaining > 0
+          ? `${remaining} file${remaining !== 1 ? "s" : ""} remaining — ${detail}`
+          : detail;
+      }
+    };
+
+    // Periodic refresh: state pill + history + devices (every 3s)
+    if (this.dashboardRefreshInterval) clearInterval(this.dashboardRefreshInterval);
+    this.dashboardRefreshInterval = setInterval(() => {
+      renderStatePill(pillContainer);
+      renderHistory();
+      renderDevices();
+    }, 3000);
 
     // Connection settings
     container.createDiv({ cls: "as-settings-section-label", text: "Connection" });
@@ -723,6 +691,8 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
     // Sync options
     container.createDiv({ cls: "as-settings-section-label", text: "Sync Options" });
+    new Setting(container).setName("Sync all file types").setDesc("Sync all files (off = only .md notes; .obsidian/ is controlled separately)")
+      .addToggle(t => { t.setValue(this.plugin.settings.syncAllFileTypes ?? true); t.onChange(async v => { this.plugin.settings.syncAllFileTypes = v; await this.plugin.saveSettings(); }); });
     new Setting(container).setName("Sync plugins").setDesc("Synchronize installed plugins across devices")
       .addToggle(t => { t.setValue(this.plugin.settings.syncPlugins); t.onChange(async v => { this.plugin.settings.syncPlugins = v; await this.plugin.saveSettings(); }); });
     new Setting(container).setName("Sync settings").setDesc("Synchronize Obsidian settings (.obsidian/*.json)")
@@ -735,6 +705,11 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         ta.inputEl.rows = 3;
         ta.onChange(async v => { this.plugin.settings.excludePatterns = v.split("\n").map(s => s.trim()).filter(Boolean); await this.plugin.saveSettings(); });
       });
+
+    // History display
+    container.createDiv({ cls: "as-settings-section-label", text: "History Display" });
+    new Setting(container).setName("Hide .obsidian/ in Recent Changes").setDesc("Filter out Obsidian config file changes from all history views")
+      .addToggle(t => { t.setValue(this.plugin.settings.hideObsidianInHistory ?? false); t.onChange(async v => { this.plugin.settings.hideObsidianInHistory = v; await this.plugin.saveSettings(); }); });
 
     // Advanced
     container.createDiv({ cls: "as-settings-section-label", text: "Advanced" });

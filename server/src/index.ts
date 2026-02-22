@@ -7,6 +7,7 @@ import http from "http";
 import https from "https";
 import path from "path";
 import express from "express";
+import type { Request, Response, NextFunction } from "express";
 import { loadConfig } from "./config";
 import { Storage } from "./storage";
 import { Auth } from "./auth";
@@ -35,33 +36,54 @@ app.use(express.json({ limit: "64kb" }));
 app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   next();
 });
 
 // Static Web UI
 app.use("/", express.static(path.join(__dirname, "web-ui")));
 
-// Health check
+// ---- Auth middleware ----
+
+/** Validates the dashboard session token (password hash) from the Authorization header. */
+function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  const header = (req.headers.authorization ?? "") as string;
+  const token = header.replace(/^Bearer\s+/i, "").trim();
+  if (!auth.checkHash(token)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  next();
+}
+
+// ---- Public endpoints ----
+
+// Health check (public — used for uptime polling, no sensitive data)
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime() });
 });
 
-// Stats
-app.get("/api/stats", (_req, res) => {
-  res.json(storage.getStats());
+// Dashboard login: validate password, return ok so client can store the hash as session token
+app.post("/api/ui-auth", (req, res) => {
+  const ip =
+    ((req.headers["x-forwarded-for"] ?? "") as string).split(",")[0].trim() ||
+    req.socket.remoteAddress ||
+    "unknown";
+  const { passwordHash } = (req.body ?? {}) as { passwordHash?: string };
+  if (!passwordHash) {
+    res.status(400).json({ error: "Missing passwordHash" });
+    return;
+  }
+  const result = auth.verify(passwordHash, ip);
+  if (!result.ok) {
+    res.status(401).json({ error: result.reason ?? "Invalid password" });
+    return;
+  }
+  res.json({ ok: true });
 });
 
-// Client sessions (online + offline device history)
-app.get("/api/clients", (_req, res) => {
-  const sessions = storage.getClientSessions();
-  res.json({
-    online:  sessions.filter((s) => s.isOnline),
-    offline: sessions.filter((s) => !s.isOnline),
-  });
-});
-
-// Obsidian theme variables (sent by plugin, served to web UI)
+// Obsidian theme variables — kept unauthenticated so the plugin can POST
+// without needing to send credentials over REST (plugin authenticates via WS).
 let currentTheme: Record<string, string> = {};
 
 app.get("/api/theme", (_req, res) => {
@@ -74,8 +96,30 @@ app.post("/api/theme", (req, res) => {
   res.json({ ok: true });
 });
 
-// Reset
-app.post("/api/reset", (_req, res) => {
+// ---- Protected endpoints ----
+
+app.get("/api/stats", requireAuth, (_req, res) => {
+  res.json(storage.getStats());
+});
+
+app.get("/api/clients", requireAuth, (_req, res) => {
+  const sessions = storage.getClientSessions();
+  res.json({
+    online:  sessions.filter((s) => s.isOnline),
+    offline: sessions.filter((s) => !s.isOnline),
+  });
+});
+
+app.get("/api/log", requireAuth, (_req, res) => {
+  res.json(storage.getLog(2000));
+});
+
+app.post("/api/log/clear", requireAuth, (_req, res) => {
+  storage.clearLog();
+  res.json({ ok: true });
+});
+
+app.post("/api/reset", requireAuth, (_req, res) => {
   storage.reset();
   currentTheme = {};
   console.log("[Server] Storage reset via web UI.");

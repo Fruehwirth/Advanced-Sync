@@ -1,6 +1,6 @@
 /**
  * Sync History sidebar view — pinnable tab showing recent sync changes.
- * Uses vanilla Obsidian ItemView for native sidebar look.
+ * Shows live progress during sync and auto-updates on every file change.
  */
 
 import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
@@ -20,18 +20,21 @@ const DIRECTION_ICON: Record<SyncHistoryEntry["direction"], string> = {
 
 const STATE_LABELS: Record<string, string> = {
   disconnected: "Disconnected",
-  connecting: "Connecting...",
+  connecting:   "Connecting...",
   authenticating: "Authenticating...",
-  syncing: "Syncing...",
-  idle: "Connected",
-  error: "Error",
+  syncing:      "Syncing...",
+  idle:         "Connected",
+  error:        "Error",
 };
 
 export class SyncHistoryView extends ItemView {
   private getHistory: () => SyncHistoryEntry[];
   private getState: () => SyncState;
-  private listEl: HTMLElement | null = null;
   private badgeEl: HTMLElement | null = null;
+  private progressEl: HTMLElement | null = null;
+  private progressBarFill: HTMLElement | null = null;
+  private progressTextEl: HTMLElement | null = null;
+  private listEl: HTMLElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -43,50 +46,71 @@ export class SyncHistoryView extends ItemView {
     this.getState = getState;
   }
 
-  getViewType(): string {
-    return SYNC_HISTORY_VIEW_TYPE;
-  }
-
-  getDisplayText(): string {
-    return "Sync History";
-  }
-
-  getIcon(): string {
-    return "refresh-cw";
-  }
+  getViewType(): string { return SYNC_HISTORY_VIEW_TYPE; }
+  getDisplayText(): string { return "Sync History"; }
+  getIcon(): string { return "refresh-cw"; }
 
   async onOpen(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     container.addClass("as-history-view");
 
-    // Header
+    // Header: title + state badge
     const header = container.createDiv("as-history-view-header");
-    header.createSpan({ text: "Sync History", cls: "as-history-view-title" });
+    header.createSpan({ text: "Recent Changes", cls: "as-history-view-title" });
     this.badgeEl = header.createDiv("as-history-view-badge");
 
-    // List
+    // Progress bar — shown only while syncing
+    this.progressEl = container.createDiv("as-history-view-progress");
+    const progressInner = this.progressEl.createDiv("as-history-view-progress-inner");
+    this.progressBarFill = progressInner.createDiv("as-history-view-progress-bar");
+    this.progressTextEl = this.progressEl.createDiv("as-history-view-progress-text");
+    this.progressEl.style.display = "none";
+
+    // History list
     this.listEl = container.createDiv("as-history-view-list");
 
     this.refresh();
   }
 
-  async onClose(): Promise<void> {
-    // nothing to clean up
+  async onClose(): Promise<void> {}
+
+  /** Update the live progress display during sync. */
+  setProgress(current: number, total: number, detail: string): void {
+    if (!this.progressEl || !this.progressTextEl || !this.progressBarFill) return;
+    this.progressEl.style.display = "block";
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    this.progressBarFill.style.width = `${pct}%`;
+    const remaining = total - current;
+    this.progressTextEl.textContent = remaining > 0
+      ? `${remaining} file${remaining !== 1 ? "s" : ""} remaining — ${detail}`
+      : detail;
   }
 
-  /** Re-render the view with current history data. Called externally on changes. */
+  /** Hide the progress area (called when sync completes or errors). */
+  clearProgress(): void {
+    if (!this.progressEl) return;
+    this.progressEl.style.display = "none";
+    if (this.progressBarFill) this.progressBarFill.style.width = "0%";
+  }
+
+  /** Re-render badge + history list. Called externally on every state/history change. */
   refresh(): void {
     if (!this.listEl || !this.badgeEl) return;
 
-    // Update state badge
+    // State badge
     const state = this.getState();
     this.badgeEl.empty();
     this.badgeEl.className = `as-history-view-badge as-state-${state}`;
     this.badgeEl.createSpan("as-history-view-badge-dot");
     this.badgeEl.createSpan({ text: STATE_LABELS[state] || state });
 
-    // Update history list
+    // Hide progress bar when not syncing
+    if (state !== "syncing" && state !== "connecting" && state !== "authenticating") {
+      this.clearProgress();
+    }
+
+    // History list
     this.listEl.empty();
     const history = this.getHistory();
 
@@ -103,7 +127,6 @@ export class SyncHistoryView extends ItemView {
       setIcon(icon, DIRECTION_ICON[entry.direction]);
 
       const info = row.createDiv("as-history-view-info");
-
       const nameRow = info.createDiv("as-history-view-name-row");
       nameRow.createSpan({ text: entry.filename, cls: "as-history-view-name" });
       if (entry.count > 1) {

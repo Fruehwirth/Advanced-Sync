@@ -92,6 +92,28 @@
       </div>
     </main>
   </div>
+  <!-- Login overlay — shown until dashboard auth is verified -->
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+        <span>Advanced Sync</span>
+      </div>
+      <h1 class="login-title">Dashboard</h1>
+      <p class="login-desc">Enter the server password to continue.</p>
+      <form id="login-form" autocomplete="on">
+        <div class="login-field">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="Server password">
+        </div>
+        <div id="login-error" class="login-error hidden"></div>
+        <button type="submit" class="btn btn-primary" id="login-submit">Sign In</button>
+      </form>
+    </div>
+  </div>
+
   <div id="modal-overlay" class="modal-overlay hidden">
     <div class="modal">
       <div class="modal-title">Reset Server Data?</div>

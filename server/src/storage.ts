@@ -55,6 +55,12 @@ export class Storage {
         is_online INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_files_sequence ON files(sequence);
+      CREATE TABLE IF NOT EXISTS activity_log (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        type      TEXT    NOT NULL,
+        text      TEXT    NOT NULL,
+        timestamp INTEGER NOT NULL
+      );
     `);
   }
 
@@ -134,10 +140,30 @@ export class Storage {
     return rows.map((r) => ({ clientId: r.client_id, deviceName: r.device_name, ip: r.ip, firstSeen: r.first_seen, lastSeen: r.last_seen, isOnline: r.is_online === 1 }));
   }
 
+  // ---- Activity log ----
+
+  appendLog(type: string, text: string, timestamp: number): void {
+    this.db.prepare("INSERT INTO activity_log (type, text, timestamp) VALUES (?, ?, ?)").run(type, text, timestamp);
+    // Trim to 2000 entries
+    const { count } = this.db.prepare("SELECT COUNT(*) as count FROM activity_log").get() as { count: number };
+    if (count > 2200) {
+      this.db.prepare("DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 2000)").run();
+    }
+  }
+
+  getLog(limit = 1000): Array<{ type: string; text: string; timestamp: number }> {
+    return this.db.prepare("SELECT type, text, timestamp FROM activity_log ORDER BY id DESC LIMIT ?").all(limit) as Array<{ type: string; text: string; timestamp: number }>;
+  }
+
+  clearLog(): void {
+    this.db.exec("DELETE FROM activity_log");
+  }
+
   reset(): void {
     this.db.exec("DELETE FROM files");
     this.db.exec("DELETE FROM vault_meta");
     this.db.exec("DELETE FROM client_sessions");
+    this.db.exec("DELETE FROM activity_log");
     try { fs.rmSync(this.blobDir, { recursive: true, force: true }); fs.mkdirSync(this.blobDir, { recursive: true }); } catch {}
     console.log("[Storage] Reset complete.");
   }

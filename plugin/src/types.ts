@@ -36,6 +36,10 @@ export interface AdvancedSyncSettings {
   syncEnabled: boolean;
   /** Strategy for the first full sync on a new device. Reset to "merge" after use. */
   initialSyncStrategy: InitialSyncStrategy;
+  /** Sync all file types (true) or only .md notes (false). .obsidian/ is controlled separately. */
+  syncAllFileTypes: boolean;
+  /** Hide .obsidian/ paths from all Recent Changes views. */
+  hideObsidianInHistory: boolean;
 }
 
 export const DEFAULT_SETTINGS: AdvancedSyncSettings = {
@@ -54,4 +58,6 @@ export const DEFAULT_SETTINGS: AdvancedSyncSettings = {
   serverId: "",
   syncEnabled: true,
   initialSyncStrategy: "merge",
+  syncAllFileTypes: true,
+  hideObsidianInHistory: false,
 };

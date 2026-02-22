@@ -59,4 +59,19 @@ export class Auth {
     this.rateLimits.delete(ip);
     return { ok: true };
   }
+
+  /**
+   * Constant-time hash check without rate limiting.
+   * Used by dashboard middleware to validate the stored session token.
+   */
+  checkHash(hash: string): boolean {
+    try {
+      const expected = Buffer.from(this.passwordHash, "hex");
+      const provided = Buffer.from(hash, "hex");
+      if (expected.length !== provided.length) return false;
+      return crypto.timingSafeEqual(expected, provided);
+    } catch {
+      return false;
+    }
+  }
 }

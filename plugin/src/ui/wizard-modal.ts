@@ -7,7 +7,6 @@
 import { App, Modal, setIcon } from "obsidian";
 import { sha256String } from "../crypto/encryption";
 import { discoverServers, isDiscoveryAvailable } from "../network/discovery";
-import { MessageType, PROTOCOL_VERSION } from "@vault-sync/shared/protocol";
 import type { DiscoveredServer } from "../network/discovery";
 import type { AdvancedSyncSettings, InitialSyncStrategy } from "../types";
 
@@ -33,10 +32,10 @@ export class SetupWizardModal extends Modal {
   private syncPlugins: boolean;
   private syncSettings: boolean;
   private syncWorkspace: boolean;
+  private syncAllFileTypes: boolean;
   private errorEl: HTMLElement | null = null;
   private serverReachable = false;
   private pingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private authError = "";
 
   private settings: AdvancedSyncSettings;
 
@@ -48,6 +47,7 @@ export class SetupWizardModal extends Modal {
     this.syncPlugins = settings.syncPlugins;
     this.syncSettings = settings.syncSettings;
     this.syncWorkspace = settings.syncWorkspace;
+    this.syncAllFileTypes = settings.syncAllFileTypes ?? true;
   }
 
   static open(
@@ -321,10 +321,6 @@ export class SetupWizardModal extends Modal {
     body.createEl("h3", { text: "Server Password" });
     body.createEl("p", { text: "Enter the password configured on your sync server.", cls: "as-wizard-desc" });
 
-    if (this.authError) {
-      body.createDiv({ text: this.authError, cls: "as-auth-error" });
-    }
-
     const inputGroup = body.createDiv("as-field-group");
     inputGroup.createEl("label", { text: "Server Password", cls: "as-field-label" });
     const pw = inputGroup.createDiv("as-password-wrapper");
@@ -467,6 +463,7 @@ export class SetupWizardModal extends Modal {
     const toggleSection = body.createDiv("as-wizard-toggles");
     toggleSection.createDiv({ text: "What to sync", cls: "as-wizard-toggles-title" });
 
+    this.addSyncToggle(toggleSection, "Sync all file types", "Sync all files (off = only .md notes)", this.syncAllFileTypes, (v) => { this.syncAllFileTypes = v; });
     this.addSyncToggle(toggleSection, "Sync plugins", "Sync installed plugins (.obsidian/plugins/)", this.syncPlugins, (v) => { this.syncPlugins = v; });
     this.addSyncToggle(toggleSection, "Sync settings", "Sync Obsidian settings (appearance, hotkeys, etc.)", this.syncSettings, (v) => { this.syncSettings = v; });
     this.addSyncToggle(toggleSection, "Sync workspace", "Sync workspace layout and open files", this.syncWorkspace, (v) => { this.syncWorkspace = v; });
@@ -523,27 +520,14 @@ export class SetupWizardModal extends Modal {
   // ---- Navigation ----
 
   private async nextStep(): Promise<void> {
-    this.authError = "";
-
     switch (this.currentStep) {
       case 1: // Find Server
         if (!this.serverUrl || !this.serverReachable) return;
         break;
-      case 2: { // Server Password
+      case 2: // Server Password
         if (!this.serverPassword) return;
         this.serverPasswordHash = await sha256String(this.serverPassword);
-        // Validate via temporary WS handshake
-        const nextBtn = this.contentEl.querySelector(".as-wizard-nav .mod-cta") as HTMLButtonElement | null;
-        if (nextBtn) { nextBtn.textContent = "Validating..."; nextBtn.addClass("as-btn-loading"); }
-        const result = await this.validateServerPassword();
-        if (nextBtn) { nextBtn.textContent = "Next"; nextBtn.removeClass("as-btn-loading"); }
-        if (!result.ok) {
-          this.authError = result.reason || "Authentication failed — check password.";
-          this.renderStep();
-          return;
-        }
         break;
-      }
       case 3: { // Encryption Password
         if (!this.encryptionPassword) {
           if (this.errorEl) { this.errorEl.textContent = "Password cannot be empty."; this.errorEl.style.display = "block"; }
@@ -564,61 +548,6 @@ export class SetupWizardModal extends Modal {
     this.renderStep();
   }
 
-  /** Quick WS handshake to validate the server password. */
-  private validateServerPassword(): Promise<{ ok: boolean; reason?: string }> {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        ws.close();
-        resolve({ ok: false, reason: "Connection timed out." });
-      }, 8000);
-
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(this.serverUrl);
-      } catch {
-        clearTimeout(timeout);
-        resolve({ ok: false, reason: "Could not connect to server." });
-        return;
-      }
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({
-          type: MessageType.AUTH,
-          clientId: "__wizard_test__",
-          deviceName: "Wizard Test",
-          passwordHash: this.serverPasswordHash,
-          protocolVersion: PROTOCOL_VERSION,
-        }));
-      };
-
-      ws.onmessage = (ev) => {
-        clearTimeout(timeout);
-        try {
-          const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "{}");
-          if (msg.type === MessageType.AUTH_OK) {
-            ws.close();
-            resolve({ ok: true });
-          } else if (msg.type === MessageType.AUTH_FAIL) {
-            ws.close();
-            resolve({ ok: false, reason: msg.reason || "Invalid password." });
-          }
-        } catch {
-          ws.close();
-          resolve({ ok: false, reason: "Unexpected server response." });
-        }
-      };
-
-      ws.onerror = () => {
-        clearTimeout(timeout);
-        resolve({ ok: false, reason: "Connection error." });
-      };
-
-      ws.onclose = () => {
-        clearTimeout(timeout);
-      };
-    });
-  }
-
   private finish(): void {
     const result: WizardResult = {
       settings: {
@@ -629,6 +558,7 @@ export class SetupWizardModal extends Modal {
         syncPlugins: this.syncPlugins,
         syncSettings: this.syncSettings,
         syncWorkspace: this.syncWorkspace,
+        syncAllFileTypes: this.syncAllFileTypes,
       },
       encryptionPassword: this.encryptionPassword,
     };

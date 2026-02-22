@@ -815,60 +815,120 @@
 }
 
 /* ============================================================
-   Sync Status Popup
+   Sync Status Popup — vanilla Obsidian menu style
    ============================================================ */
 
 .as-popup {
   position: fixed;
   z-index: 9000;
-  width: 300px;
+  width: 210px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius-m, 6px);
+  box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.2));
   overflow: hidden;
   font-size: 13px;
 }
 
-/* Header */
-.as-popup-header {
-  padding: 14px 14px 10px;
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-
+/* Title row */
 .as-popup-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  color: var(--text-muted);
 }
 
 .as-popup-title-icon {
   display: flex;
-  color: var(--interactive-accent);
+  flex-shrink: 0;
+  color: var(--text-muted);
 }
-.as-popup-title-icon svg { width: 16px; height: 16px; }
+.as-popup-title-icon svg { width: 14px; height: 14px; }
 
 .as-popup-title {
+  font-size: 12px;
   font-weight: 600;
-  font-size: 14px;
   flex: 1;
 }
 
-/* Toggle row */
-.as-popup-toggle-row {
+/* Status badge — pushed right in title row */
+.as-popup-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.as-popup-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.as-popup-status-idle    .as-popup-status-dot { background: var(--color-green, #4caf86); }
+.as-popup-status-idle    { color: var(--color-green, #4caf86); background: color-mix(in srgb, var(--color-green, #4caf86) 12%, transparent); }
+.as-popup-status-syncing .as-popup-status-dot { background: var(--interactive-accent); }
+.as-popup-status-syncing { color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
+.as-popup-status-error   .as-popup-status-dot { background: var(--color-red, #e05252); }
+.as-popup-status-error   { color: var(--color-red, #e05252); background: color-mix(in srgb, var(--color-red, #e05252) 12%, transparent); }
+
+/* Separator line */
+.as-popup-separator {
+  height: 1px;
+  background: var(--background-modifier-border);
+  margin: 2px 0;
+}
+
+/* Menu items — full-width, icon + label, like Obsidian's own menus */
+.as-popup-menu-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--text-normal);
+  user-select: none;
 }
 
-.as-popup-toggle-label {
-  font-size: 13px;
+.as-popup-menu-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.as-popup-menu-icon {
+  display: flex;
+  width: 16px;
+  flex-shrink: 0;
   color: var(--text-muted);
 }
+.as-popup-menu-icon svg { width: 14px; height: 14px; }
 
-/* Toggle switch */
+.as-popup-menu-label {
+  flex: 1;
+  font-size: 13px;
+}
+
+/* Danger action (Disconnect) */
+.as-popup-menu-item-danger { color: var(--color-red, #e05252); }
+.as-popup-menu-item-danger .as-popup-menu-icon { color: var(--color-red, #e05252); }
+.as-popup-menu-item-danger:hover { background: color-mix(in srgb, var(--color-red, #e05252) 10%, transparent); }
+
+/* Toggle item row — no pointer cursor on the row itself */
+.as-popup-toggle-item {
+  justify-content: space-between;
+  cursor: default;
+  padding: 6px 10px;
+}
+.as-popup-toggle-item:hover { background: transparent; }
+
+/* Toggle switch (shared with wizard) */
 .as-toggle-switch {
   position: relative;
   display: inline-block;
@@ -905,195 +965,15 @@
   transition: transform 0.2s, background 0.2s;
 }
 
-.as-toggle-switch input:checked + .as-toggle-track {
-  background: var(--interactive-accent);
-}
+.as-toggle-switch input:checked + .as-toggle-track { background: var(--interactive-accent); }
+.as-toggle-switch input:checked + .as-toggle-track::after { transform: translateX(14px); background: white; }
 
-.as-toggle-switch input:checked + .as-toggle-track::after {
-  transform: translateX(14px);
-  background: white;
-}
-
-/* Status badge */
-.as-popup-status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 3px 8px;
-  border-radius: 10px;
-  background: var(--background-modifier-hover);
-  color: var(--text-muted);
-}
-
-.as-popup-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-faint);
-}
-
-.as-popup-status-idle    .as-popup-status-dot,
-.as-popup-status-syncing .as-popup-status-dot { background: var(--color-green, #4caf86); }
-.as-popup-status-idle    { color: var(--color-green, #4caf86); }
-.as-popup-status-syncing { color: var(--interactive-accent); }
-.as-popup-status-error   .as-popup-status-dot,
-.as-popup-status-error   { color: var(--color-red, #e05252); }
-
-/* Section */
-.as-popup-section {
-  padding: 10px 0 0;
-}
-
-.as-popup-section-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-faint);
-  padding: 0 14px 6px;
-}
-
-/* History list */
-.as-popup-history {
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.as-popup-empty {
-  text-align: center;
-  color: var(--text-faint);
-  padding: 20px 14px;
-  font-size: 12px;
-}
-
-.as-popup-history-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--background-modifier-border-hover, var(--background-modifier-border));
-}
-
-.as-popup-history-row:last-child { border-bottom: none; }
-
-.as-popup-history-row:hover {
-  background: var(--background-modifier-hover);
-}
-
-.as-popup-history-icon {
-  display: flex;
-  width: 18px;
-  height: 18px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-
-.as-popup-history-icon svg { width: 12px; height: 12px; }
-
+/* Direction icon badges (shared with sidebar view) */
 .as-dir-upload   { background: rgba(76, 175, 134, 0.15); color: var(--color-green, #4caf86); }
 .as-dir-download { background: rgba(74, 158, 255, 0.15); color: #4a9eff; }
 .as-dir-delete   { background: rgba(224, 82, 82, 0.15);  color: var(--color-red,  #e05252); }
 
-.as-popup-history-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.as-popup-history-name-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
-.as-popup-history-name {
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 13px;
-  flex-shrink: 1;
-  min-width: 0;
-}
-
-.as-popup-history-count {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-faint);
-  background: var(--background-modifier-hover);
-  border-radius: 4px;
-  padding: 1px 5px;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.as-popup-history-path {
-  font-size: 11px;
-  color: var(--text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.as-popup-history-time {
-  font-size: 11px;
-  color: var(--text-faint);
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Footer */
-.as-popup-footer {
-  display: flex;
-  gap: 6px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-}
-
-.as-popup-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-modifier-hover);
-  color: var(--text-muted);
-  transition: background 0.1s, color 0.1s;
-}
-
-.as-popup-btn:hover {
-  background: var(--background-modifier-active-hover, var(--background-modifier-hover));
-  color: var(--text-normal);
-}
-
-.as-popup-btn svg { width: 12px; height: 12px; }
-
-.as-popup-btn-danger {
-  color: var(--color-red, #e05252);
-  border-color: rgba(224, 82, 82, 0.35);
-}
-
-.as-popup-btn-danger:hover {
-  background: rgba(224, 82, 82, 0.1);
-}
-
-/* ============================================================
-   Ribbon Icon — Mobile Status Indicator
-   ============================================================ */
-.as-ribbon-disconnected { color: var(--text-muted); }
-.as-ribbon-connecting   { color: var(--text-accent); }
-.as-ribbon-syncing      { color: var(--text-accent); animation: as-spin 1s linear infinite; }
-.as-ribbon-idle         { color: var(--color-green, #4caf86); }
-.as-ribbon-error        { color: var(--color-red, #e05252); }
+/* (ribbon icon removed) */
 
 /* ============================================================
    Sync History Sidebar View
@@ -1140,6 +1020,37 @@
 .as-history-view-badge.as-state-syncing { color: var(--interactive-accent); }
 .as-history-view-badge.as-state-error .as-history-view-badge-dot { background: var(--color-red, #e05252); }
 .as-history-view-badge.as-state-error { color: var(--color-red, #e05252); }
+
+/* Progress bar — shown during sync */
+.as-history-view-progress {
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.as-history-view-progress-inner {
+  height: 3px;
+  background: var(--background-modifier-border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.as-history-view-progress-bar {
+  height: 100%;
+  background: var(--interactive-accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.as-history-view-progress-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .as-history-view-list {
   overflow-y: auto;

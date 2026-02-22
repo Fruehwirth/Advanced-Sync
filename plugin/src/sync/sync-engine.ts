@@ -58,6 +58,20 @@ export class SyncEngine {
   private saveSettings: () => Promise<void>;
   /** True once the initial sync completes and we are ready for incremental changes. */
   private readyForIncrementalSync = false;
+  /**
+   * Downloads still in flight during the initial full sync.
+   * readyForIncrementalSync is deferred until this reaches zero so no
+   * vault event or adapter-poll tick can re-upload a file while it is
+   * still being written to disk.
+   */
+  private pendingInitialDownloads = 0;
+  private totalInitialDownloads = 0;
+  /** Sequence number held until all downloads finish before persisting. */
+  private pendingSequence: number | null = null;
+  /** When true, force sync uses pull-from-server strategy. */
+  private _forcePull = false;
+  /** Count of downloads that failed during the current sync batch. */
+  private failedDownloads = 0;
   /** The actual current state, including "idle" which ConnectionManager never emits. */
   private _state: SyncState = "disconnected";
   /** Rolling log of recently synced file changes (newest first). */
@@ -65,6 +79,8 @@ export class SyncEngine {
 
   onStateChange: SyncStateCallback = () => {};
   onProgress: SyncProgressCallback = () => {};
+  /** Called whenever the history array is updated (file synced, connected, etc.). */
+  onHistoryChange: () => void = () => {};
 
   constructor(
     app: App,
@@ -113,6 +129,11 @@ export class SyncEngine {
   /** Disconnect and stop watching. */
   disconnect(): void {
     this.readyForIncrementalSync = false;
+    this.pendingInitialDownloads = 0;
+    this.totalInitialDownloads = 0;
+    this.pendingSequence = null;
+    this._forcePull = false;
+    this.failedDownloads = 0;
     this._state = "disconnected";
     this.fileWatcher.stop();
     this.connection.disconnect();
@@ -122,12 +143,17 @@ export class SyncEngine {
     delete (this as any)._tempPassword;
   }
 
-  /** Force a full resync. */
+  /** Force a full resync. Rebuilds the local manifest first so newly added or
+   *  previously-missed files (e.g. .obsidian/icons/) are included. */
   async forceSync(): Promise<void> {
     if (this.connection.isConnected) {
       this.readyForIncrementalSync = false;
+      this._forcePull = true;
       this.settings.lastSequence = 0;
       await this.saveSettings();
+      // Rebuild manifest — picks up any files that were missed by a previous
+      // (pre-fix) manifest build, e.g. .obsidian/icons/, .obsidian/snippets/
+      await this.buildLocalManifest();
       this.connection.requestSync(0);
     }
   }
@@ -230,12 +256,14 @@ export class SyncEngine {
       await this.scanAdapterDir(adapter, ".obsidian/plugins");
     }
 
-    // Scan settings files (.obsidian/*.json etc, but not plugins/)
+    // Scan .obsidian/ settings — top-level files AND all subdirectories
+    // (e.g. icons/, snippets/, themes/) but NOT plugins/ (handled above).
     if (this.settings.syncSettings) {
       try {
         const listing = await adapter.list(".obsidian");
+
+        // Top-level files (.obsidian/*.json, .obsidian/*.css, etc.)
         for (const filePath of listing.files) {
-          // Skip plugin files (handled above) and excluded paths
           if (filePath.startsWith(".obsidian/plugins/")) continue;
           if (this.fileWatcher.shouldExclude(filePath)) continue;
           if (this.localManifest.has(await deriveFileId(filePath, this.vaultKey!))) continue;
@@ -245,12 +273,14 @@ export class SyncEngine {
 
           const fileId = await deriveFileId(filePath, this.vaultKey!);
           this.localManifest.set(fileId, {
-            path: filePath,
-            fileId,
-            mtime: stat.mtime,
-            size: stat.size,
-            contentHash: "",
+            path: filePath, fileId, mtime: stat.mtime, size: stat.size, contentHash: "",
           });
+        }
+
+        // Subdirectories — recurse into everything except plugins/
+        for (const subdir of listing.folders) {
+          if (subdir.startsWith(".obsidian/plugins")) continue;
+          await this.scanAdapterDir(adapter, subdir);
         }
       } catch {
         // .obsidian dir may not exist yet
@@ -308,53 +338,83 @@ export class SyncEngine {
     }
 
     if (msg.fullSync) {
-      // Read the strategy for initial sync; reset after use
-      const strategy = this.settings.initialSyncStrategy ?? "merge";
-      if (strategy !== "merge") {
-        this.settings.initialSyncStrategy = "merge";
-        await this.saveSettings();
-      }
-
-      if (strategy === "pull") {
-        // Pull: download everything from server, delete local-only files
+      // Force pull: download everything from server, delete local-only, upload nothing
+      if (this._forcePull) {
+        this._forcePull = false;
         for (const [, entry] of serverFiles) {
           if (!entry.deleted) toDownload.push(entry);
         }
-        // Local files not on server → delete locally
         for (const [fileId, local] of this.localManifest) {
           if (!serverFiles.has(fileId)) toDelete.push(local.path);
         }
-
-      } else if (strategy === "push") {
-        // Push: upload everything local, delete server-only files
-        for (const [, local] of this.localManifest) {
-          toUpload.push(local);
-        }
-        // Server files not local → delete from server
-        for (const [fileId] of serverFiles) {
-          if (!this.localManifest.has(fileId)) {
-            this.connection.send({ type: MessageType.FILE_DELETE, fileId });
-          }
-        }
-
       } else {
-        // Merge (default): newest file wins
+        // Read the strategy for initial sync; always reset to "merge" after use
+        // so that reconnects use the normal incremental path.
+        const strategy = this.settings.initialSyncStrategy ?? "merge";
+        this.settings.initialSyncStrategy = "merge";
+        await this.saveSettings();
 
-        // Server files → compare with local
-        for (const [fileId, entry] of serverFiles) {
-          if (entry.deleted) continue;
-          const local = this.localManifest.get(fileId);
-          if (!local) {
-            toDownload.push(entry);
-          } else {
-            const winner = resolveConflict(local.mtime, entry.mtime);
-            if (winner === "remote") toDownload.push(entry);
-            else toUpload.push(local);
+        if (strategy === "pull") {
+          // Pull: download everything from server, delete local-only files
+          for (const [, entry] of serverFiles) {
+            if (!entry.deleted) toDownload.push(entry);
           }
-        }
-        // Local-only files → upload
-        for (const [fileId, local] of this.localManifest) {
-          if (!serverFiles.has(fileId)) toUpload.push(local);
+          // Local files not on server → delete locally
+          for (const [fileId, local] of this.localManifest) {
+            if (!serverFiles.has(fileId)) toDelete.push(local.path);
+          }
+
+        } else if (strategy === "push") {
+          // Push: upload everything local, delete server-only files
+          for (const [, local] of this.localManifest) {
+            toUpload.push(local);
+          }
+          // Server files not local → delete from server
+          for (const [fileId] of serverFiles) {
+            if (!this.localManifest.has(fileId)) {
+              this.connection.send({ type: MessageType.FILE_DELETE, fileId });
+            }
+          }
+
+        } else {
+          // Merge (default): newest file wins for regular vault files.
+          //
+          // IMPORTANT: .obsidian/ config files are always taken from the server during
+          // initial sync. A freshly-set-up device only has Obsidian's installation
+          // defaults (e.g. community-plugins.json listing only 2 plugins). Those
+          // defaults have a current timestamp, which would "win" a timestamp comparison
+          // against the server's real config and overwrite it on all other devices.
+          // During subsequent incremental syncs the normal conflict logic applies.
+
+          for (const [fileId, entry] of serverFiles) {
+            if (entry.deleted) continue;
+            const local = this.localManifest.get(fileId);
+            if (!local) {
+              // File is on server but not local → always download
+              toDownload.push(entry);
+            } else if (local.path.startsWith(".obsidian/")) {
+              // .obsidian/ file exists on both: server always wins during initial sync
+              toDownload.push(entry);
+            } else {
+              // Regular vault file: newest timestamp wins
+              const winner = resolveConflict(local.mtime, entry.mtime);
+              if (winner === "remote") toDownload.push(entry);
+              else toUpload.push(local);
+            }
+          }
+
+          // Local-only files
+          for (const [fileId, local] of this.localManifest) {
+            if (!serverFiles.has(fileId)) {
+              if (local.path.startsWith(".obsidian/")) {
+                // Local-only .obsidian/ file on a new device: this device has a config
+                // the server doesn't know about. Do NOT push it — the server's state is
+                // canonical. (If the user wants to push local config, use Push strategy.)
+                continue;
+              }
+              toUpload.push(local);
+            }
+          }
         }
       }
 
@@ -385,28 +445,21 @@ export class SyncEngine {
       return;
     }
 
-    // Process downloads (fire-and-forget — responses arrive async via onBinaryData)
-    for (const entry of toDownload) {
-      current++;
-      this.onProgress(current, total, `Downloading file ${current}/${toDownload.length}`);
-      this.connection.send({
-        type: MessageType.FILE_DOWNLOAD,
-        fileId: entry.fileId,
-      });
-    }
+    // Defer sequence persistence until all downloads complete.
+    // If we saved now and the connection drops mid-download, the server
+    // would do an incremental sync on reconnect and skip all missed files.
+    this.pendingSequence = msg.currentSequence;
 
-    // Process uploads
-    const uploadStart = toDownload.length;
+    // Process uploads first (await each — uploads are sequential and safe)
     for (let i = 0; i < toUpload.length; i++) {
       const local = toUpload[i];
-      current = uploadStart + i + 1;
-      // Show just the filename, not the full path, to keep the label short
+      current++;
       const label = local.path.split("/").pop() ?? local.path;
       this.onProgress(current, total, `Uploading ${i + 1}/${toUpload.length}: ${label}`);
       await this.uploadFile(local.path);
     }
 
-    // Process deletes
+    // Process deletes (await each)
     for (let i = 0; i < toDelete.length; i++) {
       current++;
       const label = toDelete[i].split("/").pop() ?? toDelete[i];
@@ -414,23 +467,49 @@ export class SyncEngine {
       await this.deleteLocalFile(toDelete[i]);
     }
 
-    // Update sequence and transition to idle
-    this.settings.lastSequence = msg.currentSequence;
-    await this.saveSettings();
-    this.readyForIncrementalSync = true;
-    this._state = "idle";
-    this.onStateChange("idle", "Synced");
+    if (toDownload.length === 0) {
+      // No downloads — persist sequence and transition to idle immediately
+      this.settings.lastSequence = this.pendingSequence!;
+      this.pendingSequence = null;
+      await this.saveSettings();
+      this.readyForIncrementalSync = true;
+      this._state = "idle";
+      this.onStateChange("idle", "Synced");
+      return;
+    }
+
+    // Request all downloads. The server pushes FILE_DOWNLOAD_RESPONSE (text)
+    // + binary frame pairs. readyForIncrementalSync stays false until the
+    // last binary has been written so nothing can re-upload mid-write.
+    this.totalInitialDownloads = toDownload.length;
+    this.pendingInitialDownloads = toDownload.length;
+    this.failedDownloads = 0;
+    this.onProgress(0, toDownload.length, `Downloading 0 / ${toDownload.length} files`);
+
+    for (const entry of toDownload) {
+      this.connection.send({ type: MessageType.FILE_DOWNLOAD, fileId: entry.fileId });
+    }
   }
 
   /** Record a file change in the history log.
-   *  If the most recent entry has the same path + direction, just increment
-   *  its count instead of adding a duplicate row. */
+   *  Searches within the last 5 entries for a matching path+direction so that
+   *  intermediate background writes (e.g. vault-stats.json) don't prevent
+   *  consecutive edits to the same file from being counted up. */
   private recordHistory(path: string, direction: SyncHistoryEntry["direction"]): void {
-    const top = this.history[0];
-    if (top && top.path === path && top.direction === direction) {
-      top.count++;
-      top.timestamp = Date.now();
-      return;
+    const LOOK_BACK = 5;
+    for (let i = 0; i < Math.min(LOOK_BACK, this.history.length); i++) {
+      const entry = this.history[i];
+      if (entry.path === path && entry.direction === direction) {
+        entry.count++;
+        entry.timestamp = Date.now();
+        // Bring the matched entry to the top so it stays visible
+        if (i > 0) {
+          this.history.splice(i, 1);
+          this.history.unshift(entry);
+        }
+        this.onHistoryChange();
+        return;
+      }
     }
     this.history.unshift({
       path,
@@ -440,6 +519,7 @@ export class SyncEngine {
       count: 1,
     });
     if (this.history.length > MAX_HISTORY) this.history.pop();
+    this.onHistoryChange();
   }
 
   /** Upload a local file to the server. */
@@ -516,6 +596,8 @@ export class SyncEngine {
     if (!entry || !downloadFileId) return;
     this.pendingDownloads.delete(downloadFileId);
 
+    let failed = false;
+    let filePath: string | undefined;
     try {
       // Decrypt metadata to get the file path
       const meta = await decryptMetadata<{ path: string }>(
@@ -524,30 +606,33 @@ export class SyncEngine {
       );
       if (!meta) {
         console.error("[Sync] Failed to decrypt metadata for", downloadFileId);
+        failed = true;
         return;
       }
+      filePath = meta.path;
 
       // Decrypt the blob
       const blobStr = new TextDecoder().decode(data);
       const encrypted = JSON.parse(blobStr);
       const decrypted = await decryptBlob(encrypted, this.vaultKey);
       if (!decrypted) {
-        console.error("[Sync] Failed to decrypt blob for", meta.path);
+        console.error("[Sync] Failed to decrypt blob for", filePath);
+        failed = true;
         return;
       }
 
       // Respect syncPlugins / syncSettings toggles for incoming files too
-      if (this.fileWatcher.shouldExclude(meta.path)) {
+      if (this.fileWatcher.shouldExclude(filePath)) {
         return;
       }
 
       // Write file to vault
-      await this.writeFile(meta.path, decrypted, entry.mtime);
-      this.recordHistory(meta.path, "download");
+      await this.writeFile(filePath, decrypted, entry.mtime);
+      this.recordHistory(filePath, "download");
 
       // Update local manifest
       this.localManifest.set(downloadFileId, {
-        path: meta.path,
+        path: filePath,
         fileId: downloadFileId,
         mtime: entry.mtime,
         size: entry.size,
@@ -555,11 +640,51 @@ export class SyncEngine {
       });
 
       // Check if this is a plugin file
-      if (meta.path.startsWith(".obsidian/plugins/")) {
+      if (filePath.startsWith(".obsidian/plugins/")) {
         this.pluginFilesChanged = true;
       }
     } catch (err: any) {
       console.error("[Sync] Error processing download:", err.message);
+      failed = true;
+    } finally {
+      if (failed) {
+        this.failedDownloads++;
+        // Use decrypted path when available, fall back to fileId
+        this.recordHistory(filePath ?? downloadFileId!, "error");
+      }
+
+      // Count down initial-sync downloads. Flip readyForIncrementalSync only
+      // when the very last file has been written so nothing can re-upload it.
+      if (this.pendingInitialDownloads > 0) {
+        this.pendingInitialDownloads--;
+        const received = this.totalInitialDownloads - this.pendingInitialDownloads;
+        this.onProgress(
+          received,
+          this.totalInitialDownloads,
+          `Downloading ${received} / ${this.totalInitialDownloads} files`
+        );
+
+        if (this.pendingInitialDownloads === 0) {
+          this.totalInitialDownloads = 0;
+
+          // Persist the deferred sequence now that all downloads are done
+          if (this.pendingSequence !== null) {
+            this.settings.lastSequence = this.pendingSequence;
+            this.pendingSequence = null;
+            this.saveSettings();
+          }
+
+          // Notify user about failed downloads
+          if (this.failedDownloads > 0) {
+            new Notice(`Sync: ${this.failedDownloads} file(s) failed to download. Check Recent Changes for details.`);
+            this.failedDownloads = 0;
+          }
+
+          this.readyForIncrementalSync = true;
+          this._state = "idle";
+          this.onStateChange("idle", "Synced");
+        }
+      }
     }
   }
 
@@ -664,13 +789,20 @@ export class SyncEngine {
         }
       }
 
-      // Use adapter for .obsidian files, vault for regular files
       await this.app.vault.adapter.writeBinary(filePath, content);
+
+      // For .obsidian/ files tracked by the adapter poll: cache the real on-disk mtime
+      // immediately so the next poll tick doesn't treat this sync write as a user edit.
+      if (filePath.startsWith(".obsidian/")) {
+        const stat = await this.app.vault.adapter.stat(filePath);
+        if (stat) this.fileWatcher.setCachedMtime(filePath, stat.mtime);
+      }
     } catch (err: any) {
       console.error(`[Sync] Failed to write ${filePath}:`, err.message);
     } finally {
-      // Unsuppress after a short delay
-      setTimeout(() => this.fileWatcher.unsuppress(filePath), 500);
+      // Unsuppress after 1 second — long enough to cover Obsidian's double-fire
+      // (create + modify) and the 300 ms debounce timer.
+      setTimeout(() => this.fileWatcher.unsuppress(filePath), 1000);
     }
   }
 
@@ -693,7 +825,7 @@ export class SyncEngine {
     } catch (err: any) {
       console.error(`[Sync] Failed to delete ${filePath}:`, err.message);
     } finally {
-      setTimeout(() => this.fileWatcher.unsuppress(filePath), 500);
+      setTimeout(() => this.fileWatcher.unsuppress(filePath), 1000);
     }
   }
 
@@ -701,12 +833,8 @@ export class SyncEngine {
    * Call after initial sync to notify user about plugin changes.
    */
   checkPluginChanges(): void {
-    if (this.pluginFilesChanged) {
-      this.pluginFilesChanged = false;
-      new Notice(
-        "Advanced Sync: Plugin files were updated. Reload Obsidian to apply changes.",
-        10000
-      );
-    }
+    // Plugin files may have changed during sync — clear the flag silently.
+    // The user can see what was synced in the Recent Changes view.
+    this.pluginFilesChanged = false;
   }
 }

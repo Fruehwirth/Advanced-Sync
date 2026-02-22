@@ -26,6 +26,9 @@ export class FileWatcher {
   private pollInterval: ReturnType<typeof setInterval> | null = null;
   /** Cached mtimes for adapter-level files from last poll. */
   private adapterMtimes: Map<string, number> = new Map();
+  /** True after the first adapter poll completes — guards against emitting
+   *  spurious "create" events on startup for files that already existed. */
+  private adapterPollHasRun = false;
 
   constructor(
     vault: Vault,
@@ -82,6 +85,7 @@ export class FileWatcher {
       this.pollInterval = null;
     }
     this.adapterMtimes.clear();
+    this.adapterPollHasRun = false;
   }
 
   /**
@@ -106,9 +110,9 @@ export class FileWatcher {
   ): void {
     const filePath = file.path;
 
-    // Check suppression
+    // Check suppression — do NOT delete here; unsuppress() clears after the write window.
+    // This prevents Obsidian's double-fire (create + modify for a single write) from leaking.
     if (this.suppressedPaths.has(filePath)) {
-      this.suppressedPaths.delete(filePath);
       return;
     }
 
@@ -170,6 +174,12 @@ export class FileWatcher {
       return true;
     }
 
+    // If not syncing all file types, only allow .md files (plus .obsidian/ handled above)
+    if (!this.settings.syncAllFileTypes && !filePath.startsWith(".obsidian/")) {
+      const ext = filePath.split(".").pop()?.toLowerCase();
+      if (ext !== "md") return true;
+    }
+
     // Check user exclude patterns
     for (const pattern of this.settings.excludePatterns) {
       if (this.matchPattern(filePath, pattern)) {
@@ -200,26 +210,36 @@ export class FileWatcher {
   /** Poll .obsidian/plugins/ (and settings) for mtime changes. */
   private async pollAdapterFiles(): Promise<void> {
     const adapter = this.vault.adapter;
-    const dirsToScan: string[] = [];
-
-    if (this.settings.syncPlugins) dirsToScan.push(".obsidian/plugins");
-    if (this.settings.syncSettings) dirsToScan.push(".obsidian");
-
     const currentFiles = new Map<string, number>();
 
-    for (const dir of dirsToScan) {
-      await this.pollDir(adapter, dir, currentFiles, dir === ".obsidian");
+    // Scan .obsidian/ recursively (icons/, snippets/, themes/, etc.)
+    // but skip plugins/ — it is handled separately by the syncPlugins path.
+    if (this.settings.syncSettings) {
+      await this.pollDir(adapter, ".obsidian", currentFiles, ".obsidian/plugins");
+    }
+
+    // Scan .obsidian/plugins/ separately (may be off independently)
+    if (this.settings.syncPlugins) {
+      await this.pollDir(adapter, ".obsidian/plugins", currentFiles);
+    }
+
+    if (!this.adapterPollHasRun) {
+      // First run: just establish the baseline — never emit on startup.
+      // Also seed the map with any mtime already set by setCachedMtime.
+      for (const [path, diskMtime] of currentFiles) {
+        const cached = this.adapterMtimes.get(path) ?? 0;
+        this.adapterMtimes.set(path, Math.max(diskMtime, cached));
+      }
+      this.adapterPollHasRun = true;
+      return;
     }
 
     // Detect new or modified files
-    for (const [path, mtime] of currentFiles) {
+    for (const [path, diskMtime] of currentFiles) {
       const prev = this.adapterMtimes.get(path);
       if (prev === undefined) {
-        // First time seeing this file — only emit if we had a previous scan
-        if (this.adapterMtimes.size > 0) {
-          this.emitAdapterChange("create", path);
-        }
-      } else if (mtime > prev) {
+        this.emitAdapterChange("create", path);
+      } else if (diskMtime > prev) {
         this.emitAdapterChange("modify", path);
       }
     }
@@ -231,44 +251,56 @@ export class FileWatcher {
       }
     }
 
-    this.adapterMtimes = currentFiles;
+    // Update adapterMtimes in-place using Math.max so that any setCachedMtime()
+    // call that happened concurrently (during an await in pollDir) is never
+    // overwritten by a stale disk value read before the write completed.
+    for (const [path, diskMtime] of currentFiles) {
+      const cached = this.adapterMtimes.get(path) ?? 0;
+      this.adapterMtimes.set(path, Math.max(diskMtime, cached));
+    }
+    for (const path of [...this.adapterMtimes.keys()]) {
+      if (!currentFiles.has(path)) this.adapterMtimes.delete(path);
+    }
   }
 
-  /** Recursively scan a directory and collect file paths + mtimes. */
+  /** Recursively scan a directory and collect file paths + mtimes.
+   *  @param skipSubdirPrefix — skip any subdirectory whose path starts with this string. */
   private async pollDir(
     adapter: any,
     dir: string,
     out: Map<string, number>,
-    topLevelOnly = false
+    skipSubdirPrefix?: string
   ): Promise<void> {
     try {
       const listing = await adapter.list(dir);
 
       for (const filePath of listing.files) {
-        // When scanning .obsidian top-level, skip plugins/ (handled separately)
-        if (topLevelOnly && filePath.startsWith(".obsidian/plugins/")) continue;
         if (this.shouldExclude(filePath)) continue;
-
         const stat = await adapter.stat(filePath);
-        if (stat && stat.type === "file") {
-          out.set(filePath, stat.mtime);
-        }
+        if (stat && stat.type === "file") out.set(filePath, stat.mtime);
       }
 
-      if (!topLevelOnly) {
-        for (const subdir of listing.folders) {
-          await this.pollDir(adapter, subdir, out);
-        }
+      for (const subdir of listing.folders) {
+        if (skipSubdirPrefix && subdir.startsWith(skipSubdirPrefix)) continue;
+        await this.pollDir(adapter, subdir, out, skipSubdirPrefix);
       }
     } catch {
       // Directory may not exist
     }
   }
 
+  /**
+   * Pre-populate the adapter mtime cache for a path that was just written by the
+   * sync engine. Prevents the 5-second poll from treating sync writes as user edits.
+   */
+  setCachedMtime(path: string, mtime: number): void {
+    this.adapterMtimes.set(path, mtime);
+  }
+
   /** Emit a change from adapter polling (with suppression check). */
   private emitAdapterChange(type: "create" | "modify" | "delete", path: string): void {
+    // Same non-one-shot suppression as vault events
     if (this.suppressedPaths.has(path)) {
-      this.suppressedPaths.delete(path);
       return;
     }
     this.callback({ type, path });

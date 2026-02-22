@@ -1,10 +1,10 @@
 /**
- * Status bar popup — shows sync history and a sync enable/disable toggle.
- * Appears as a floating panel anchored above the status bar item.
+ * Quick-action popup anchored above the status bar item.
+ * Shows sync state + toggle + action buttons in a vanilla Obsidian menu style.
+ * No history list — that lives in the dedicated sidebar tab.
  */
 
 import { setIcon } from "obsidian";
-import type { SyncHistoryEntry } from "../sync/sync-engine";
 import type { SyncState } from "@vault-sync/shared/types";
 
 export interface SyncPopupCallbacks {
@@ -14,24 +14,26 @@ export interface SyncPopupCallbacks {
   onConnect: () => void;
 }
 
-const DIRECTION_ICON: Record<SyncHistoryEntry["direction"], string> = {
-  upload:     "arrow-up",
-  download:   "arrow-down",
-  delete:     "trash-2",
-  connect:    "wifi",
-  disconnect: "wifi-off",
-  error:      "alert-triangle",
-};
-
 export class SyncPopup {
   private el: HTMLElement | null = null;
   private anchor: HTMLElement;
   private callbacks: SyncPopupCallbacks;
+  private getState: () => SyncState;
+  private getSyncEnabled: () => boolean;
   private boundClose: (e: MouseEvent) => void;
+  private refreshInterval: ReturnType<typeof setInterval> | null = null;
+  private statusBadgeEl: HTMLElement | null = null;
 
-  constructor(anchor: HTMLElement, callbacks: SyncPopupCallbacks) {
+  constructor(
+    anchor: HTMLElement,
+    callbacks: SyncPopupCallbacks,
+    getState: () => SyncState,
+    getSyncEnabled: () => boolean,
+  ) {
     this.anchor = anchor;
     this.callbacks = callbacks;
+    this.getState = getState;
+    this.getSyncEnabled = getSyncEnabled;
     this.boundClose = (e: MouseEvent) => {
       if (this.el && !this.el.contains(e.target as Node) && e.target !== this.anchor) {
         this.close();
@@ -39,115 +41,62 @@ export class SyncPopup {
     };
   }
 
-  get isOpen(): boolean {
-    return this.el !== null;
+  get isOpen(): boolean { return this.el !== null; }
+
+  /** Refresh the status badge if popup is open — called on state changes. */
+  refreshIfOpen(): void {
+    if (!this.el) return;
+    this.renderStatusBadge();
   }
 
-  open(
-    syncEnabled: boolean,
-    state: SyncState,
-    history: SyncHistoryEntry[]
-  ): void {
-    if (this.el) {
-      this.close();
-      return; // toggle
-    }
+  open(): void {
+    if (this.el) { this.close(); return; }
+
+    const syncEnabled = this.getSyncEnabled();
+    const state = this.getState();
 
     this.el = document.createElement("div");
     this.el.className = "as-popup";
-    this.el.setAttribute("role", "dialog");
+    this.el.setAttribute("role", "menu");
 
-    // ---- Header ----
-    const header = this.el.createDiv("as-popup-header");
-
-    const titleRow = header.createDiv("as-popup-title-row");
+    // ── Title row: icon + "Advanced Sync" + live status badge ──
+    const titleRow = this.el.createDiv("as-popup-title-row");
     const titleIcon = titleRow.createSpan("as-popup-title-icon");
     setIcon(titleIcon, "refresh-cw");
     titleRow.createSpan({ text: "Advanced Sync", cls: "as-popup-title" });
+    this.statusBadgeEl = titleRow.createDiv("as-popup-status-badge");
 
-    // Sync toggle
-    const toggleRow = header.createDiv("as-popup-toggle-row");
-    toggleRow.createSpan({ text: "Syncing", cls: "as-popup-toggle-label" });
+    this.el.createDiv("as-popup-separator");
 
-    const toggleLabel = toggleRow.createEl("label", { cls: "as-toggle-switch" });
+    // ── Syncing toggle ──
+    const toggleItem = this.el.createDiv("as-popup-menu-item as-popup-toggle-item");
+    toggleItem.createSpan({ text: "Syncing", cls: "as-popup-menu-label" });
+    const toggleLabel = toggleItem.createEl("label", { cls: "as-toggle-switch" });
     const checkbox = toggleLabel.createEl("input", { type: "checkbox" });
     checkbox.checked = syncEnabled;
     toggleLabel.createSpan({ cls: "as-toggle-track" });
+    checkbox.addEventListener("change", () => this.callbacks.onToggleSync(checkbox.checked));
 
-    checkbox.addEventListener("change", () => {
-      this.callbacks.onToggleSync(checkbox.checked);
-    });
+    this.el.createDiv("as-popup-separator");
 
-    // Connection status badge
-    const statusBadge = header.createDiv("as-popup-status-badge");
-    statusBadge.addClass(`as-popup-status-${state}`);
-    const badgeDot = statusBadge.createSpan("as-popup-status-dot");
-    statusBadge.createSpan({ text: this.stateLabel(state) });
-
-    // ---- History ----
-    const section = this.el.createDiv("as-popup-section");
-    section.createDiv({ text: "Recent Changes", cls: "as-popup-section-title" });
-
-    const list = section.createDiv("as-popup-history");
-
-    if (history.length === 0) {
-      list.createDiv({ text: "No changes yet", cls: "as-popup-empty" });
-    } else {
-      for (const entry of history.slice(0, 20)) {
-        const row = list.createDiv("as-popup-history-row");
-
-        const icon = row.createSpan("as-popup-history-icon");
-        icon.addClass(`as-dir-${entry.direction}`);
-        setIcon(icon, DIRECTION_ICON[entry.direction]);
-
-        const info = row.createDiv("as-popup-history-info");
-
-        const nameRow = info.createDiv("as-popup-history-name-row");
-        nameRow.createSpan({ text: entry.filename, cls: "as-popup-history-name" });
-        if (entry.count > 1) {
-          nameRow.createSpan({ text: `×${entry.count}`, cls: "as-popup-history-count" });
-        }
-
-        info.createDiv({ text: entry.path, cls: "as-popup-history-path" });
-
-        row.createSpan({ text: this.formatTime(entry.timestamp), cls: "as-popup-history-time" });
-      }
-    }
-
-    // ---- Footer actions ----
-    const footer = this.el.createDiv("as-popup-footer");
-
-    const forceSyncBtn = footer.createEl("button", { cls: "as-popup-btn" });
-    setIcon(forceSyncBtn.createSpan(), "refresh-cw");
-    forceSyncBtn.createSpan({ text: "Force sync" });
-    forceSyncBtn.addEventListener("click", () => {
-      this.close();
-      this.callbacks.onForceSync();
-    });
+    // ── Action items ──
+    this.addMenuItem("refresh-cw", "Force sync", () => { this.close(); this.callbacks.onForceSync(); });
 
     if (state === "disconnected" || state === "error") {
-      const connectBtn = footer.createEl("button", { cls: "as-popup-btn" });
-      setIcon(connectBtn.createSpan(), "wifi");
-      connectBtn.createSpan({ text: "Connect" });
-      connectBtn.addEventListener("click", () => {
-        this.close();
-        this.callbacks.onConnect();
-      });
+      this.addMenuItem("wifi", "Connect", () => { this.close(); this.callbacks.onConnect(); });
     } else {
-      const disconnectBtn = footer.createEl("button", { cls: "as-popup-btn as-popup-btn-danger" });
-      setIcon(disconnectBtn.createSpan(), "wifi-off");
-      disconnectBtn.createSpan({ text: "Disconnect" });
-      disconnectBtn.addEventListener("click", () => {
-        this.close();
-        this.callbacks.onDisconnect();
-      });
+      this.addMenuItem("wifi-off", "Disconnect", () => { this.close(); this.callbacks.onDisconnect(); }, true);
     }
 
-    // Position above the anchor element
+    // Render live status badge
+    this.renderStatusBadge();
+
     document.body.appendChild(this.el);
     this.position();
 
-    // Close on outside click (deferred so this click doesn't immediately close it)
+    // Refresh status badge every 2s while open
+    this.refreshInterval = setInterval(() => this.renderStatusBadge(), 2000);
+
     setTimeout(() => {
       document.addEventListener("click", this.boundClose, true);
     }, 0);
@@ -155,27 +104,34 @@ export class SyncPopup {
 
   close(): void {
     document.removeEventListener("click", this.boundClose, true);
-    if (this.el) {
-      this.el.remove();
-      this.el = null;
-    }
+    if (this.refreshInterval) { clearInterval(this.refreshInterval); this.refreshInterval = null; }
+    if (this.el) { this.el.remove(); this.el = null; }
+    this.statusBadgeEl = null;
+  }
+
+  private addMenuItem(icon: string, label: string, onClick: () => void, danger = false): void {
+    const item = this.el!.createDiv("as-popup-menu-item");
+    if (danger) item.addClass("as-popup-menu-item-danger");
+    const iconEl = item.createSpan("as-popup-menu-icon");
+    setIcon(iconEl, icon);
+    item.createSpan({ text: label, cls: "as-popup-menu-label" });
+    item.addEventListener("click", onClick);
+  }
+
+  private renderStatusBadge(): void {
+    if (!this.statusBadgeEl) return;
+    const state = this.getState();
+    this.statusBadgeEl.empty();
+    this.statusBadgeEl.className = `as-popup-status-badge as-popup-status-${state}`;
+    this.statusBadgeEl.createSpan("as-popup-status-dot");
+    this.statusBadgeEl.createSpan({ text: this.stateLabel(state) });
   }
 
   private position(): void {
     if (!this.el) return;
     const rect = this.anchor.getBoundingClientRect();
-    const popupHeight = this.el.offsetHeight || 360;
-    const popupWidth = this.el.offsetWidth || 300;
-
-    // Align right edge to anchor right, place above anchor
-    let top = rect.top - popupHeight - 8;
     let right = window.innerWidth - rect.right;
-
-    // If it would go above the viewport, flip to below
-    if (top < 8) top = rect.bottom + 8;
-    // If it would go off the right edge, clamp
     if (right < 8) right = 8;
-
     this.el.style.position = "fixed";
     this.el.style.bottom = (window.innerHeight - rect.top + 8) + "px";
     this.el.style.right = right + "px";
@@ -192,22 +148,5 @@ export class SyncPopup {
       error:          "Error",
     };
     return labels[state] ?? state;
-  }
-
-  private formatTime(ts: number): string {
-    const d = new Date(ts);
-    const now = new Date();
-    const diffMs = now.getTime() - ts;
-    const diffMin = Math.floor(diffMs / 60000);
-
-    if (diffMin < 1)  return "just now";
-    if (diffMin < 60) return `${diffMin}m ago`;
-
-    const diffH = Math.floor(diffMin / 60);
-    if (diffH < 24) return `${diffH}h ago`;
-
-    // Different day: show date
-    return d.toLocaleDateString([], { month: "short", day: "numeric" }) +
-      " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 }

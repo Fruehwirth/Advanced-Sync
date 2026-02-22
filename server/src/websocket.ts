@@ -4,7 +4,7 @@
  *
  * Two WebSocket endpoints:
  *   /sync — authenticated sync clients
- *   /ui   — unauthenticated dashboard subscribers
+ *   /ui   — dashboard subscribers (require dashboard auth token in ?auth= query param)
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -38,6 +38,13 @@ interface ConnectedClient {
   lastActivity: number;
   /** Pending binary data expected after a FILE_UPLOAD message. */
   pendingUpload: FileUploadMessage | null;
+}
+
+function fmtSize(b: number): string {
+  if (!b) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  return (b / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + " " + units[i];
 }
 
 export class SyncWebSocketServer {
@@ -77,7 +84,7 @@ export class SyncWebSocketServer {
       noServer: true,
       perMessageDeflate: false,
     });
-    this.uiWss.on("connection", (ws) => this.handleUIConnection(ws));
+    this.uiWss.on("connection", (ws, req) => this.handleUIConnection(ws, req));
 
     // Route upgrade requests to the correct WebSocket server
     server.on("upgrade", (request, socket, head) => {
@@ -99,9 +106,17 @@ export class SyncWebSocketServer {
     this.pingInterval = setInterval(() => this.pingClients(), 30000);
   }
 
-  private handleUIConnection(ws: WebSocket): void {
+  private handleUIConnection(ws: WebSocket, req: IncomingMessage): void {
+    // Validate dashboard auth token from query string
+    const url = new URL(req.url ?? "/", "http://base");
+    const token = url.searchParams.get("auth") ?? "";
+    if (!this.auth.checkHash(token)) {
+      ws.close(4003, "Unauthorized");
+      return;
+    }
+
     this.uiSubscribers.add(ws);
-    // Send current status immediately
+    // Send current status + log history immediately
     this.sendUIStatus(ws);
 
     ws.on("close", () => {
@@ -141,6 +156,7 @@ export class SyncWebSocketServer {
       this.clients.delete(ws);
       if (client.authenticated) {
         this.storage.setClientOffline(client.clientId);
+        this.storage.appendLog("connect", `${client.deviceName} disconnected`, Date.now());
         console.log(`[WS] Client disconnected: ${client.deviceName} (${client.clientId})`);
         this.broadcastUIEvent("client_disconnected", {
           clientId: client.clientId,
@@ -243,7 +259,12 @@ export class SyncWebSocketServer {
       }
     }
 
-    // Broadcast to UI
+    // Log and broadcast to UI
+    this.storage.appendLog(
+      "upload",
+      `${client.deviceName} synced ${upload.fileId.substring(0, 8)}... (${fmtSize(upload.size)})`,
+      Date.now()
+    );
     this.broadcastUIEvent("file_changed", {
       fileId: upload.fileId,
       size: upload.size,
@@ -303,6 +324,7 @@ export class SyncWebSocketServer {
 
     console.log(`[WS] Client authenticated: ${client.deviceName} (${client.clientId})`);
 
+    this.storage.appendLog("connect", `${client.deviceName} connected from ${client.ip}`, Date.now());
     this.broadcastUIEvent("client_connected", {
       clientId: client.clientId,
       deviceName: client.deviceName,
@@ -398,6 +420,11 @@ export class SyncWebSocketServer {
       }
     }
 
+    this.storage.appendLog(
+      "remove",
+      `File ${msg.fileId.substring(0, 8)}... deleted by ${client.deviceName}`,
+      Date.now()
+    );
     this.broadcastUIEvent("file_removed", {
       fileId: msg.fileId,
       clientId: client.clientId,
@@ -428,6 +455,7 @@ export class SyncWebSocketServer {
       }
     }
 
+    this.storage.appendLog("remove", `File ${fileId.substring(0, 8)}... deleted`, Date.now());
     this.broadcastUIEvent("file_removed", {
       fileId,
       clientId,
@@ -486,10 +514,11 @@ export class SyncWebSocketServer {
   private sendUIStatus(ws: WebSocket): void {
     const stats = this.storage.getStats();
     const clients = this.getConnectedClients();
+    const log = this.storage.getLog(1000);
     const msg = JSON.stringify({
       type: MessageType.UI_EVENT,
       event: "status",
-      data: { stats, clients },
+      data: { stats, clients, log },
     });
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(msg);
