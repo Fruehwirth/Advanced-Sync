@@ -474,6 +474,7 @@ export class SyncEngine {
   private handleSessionRevoked(): void {
     this.settings.authToken = "";
     this.settings.encryptionKeyB64 = "";
+    this.settings.setupComplete = false;
     this.saveSettings();
     new Notice("Advanced Sync: Session revoked. Please re-enter your password in settings.", 8000);
   }

@@ -12,6 +12,8 @@ var loginPasswordInput=document.getElementById("login-password");
 var loginErrorEl=document.getElementById("login-error");
 var loginSubmitBtn=document.getElementById("login-submit");
 
+var hamburgerBtn=document.getElementById("hamburger-btn");
+var sidebarOverlay=document.getElementById("sidebar-overlay");
 var statusDot=document.getElementById("server-status-dot");
 var statusText=document.getElementById("server-status-text");
 var statFiles=document.getElementById("stat-files");
@@ -108,9 +110,18 @@ function applyTheme(vars) {
 
 // ---- Dashboard init ----
 function initDashboard() {
+  // Mobile hamburger menu
+  if(hamburgerBtn){
+    hamburgerBtn.addEventListener("click",function(){document.body.classList.toggle("sidebar-open");});
+  }
+  if(sidebarOverlay){
+    sidebarOverlay.addEventListener("click",function(){document.body.classList.remove("sidebar-open");});
+  }
+
   // Wire up navigation
   document.querySelectorAll(".nav-item").forEach(function(item){
     item.addEventListener("click", function(){
+      document.body.classList.remove("sidebar-open");
       var tab=item.getAttribute("data-tab");
       document.querySelectorAll(".nav-item").forEach(function(n){n.classList.remove("active");});
       document.querySelectorAll(".tab-content").forEach(function(t){t.classList.remove("active");});

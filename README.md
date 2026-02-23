@@ -1,22 +1,20 @@
 # Advanced Sync
 
-> End-to-end encrypted vault synchronisation across devices via a self-hosted Docker server.
-
 **Advanced Sync** keeps your Obsidian vault in sync across all your devices in real time. All data is encrypted on your device before it leaves — the server stores only ciphertext and never sees your notes, file names, or passwords.
 
 ---
 
 ## Features
 
-- **End-to-end encrypted** — AES-256-GCM with PBKDF2 key derivation. The server is fully untrusted.
-- **Real-time sync** — Changes appear on other devices within seconds via a persistent WebSocket connection.
-- **Single password** — One password authenticates you with the server and encrypts your vault data.
-- **Sync preview** — See exactly what will change before the first sync applies.
-- **Session tokens** — After the first login, Obsidian reconnects automatically on restart without re-entering your password.
-- **Selective sync** — Choose to sync notes only, or include plugins, settings, and all file types.
-- **Device management** — See all connected devices and kick sessions from the plugin dashboard or server web UI.
-- **Self-hosted** — Your data stays on your own infrastructure.
-- **Desktop and mobile** — Works on all platforms Obsidian supports.
+- **End-to-end encrypted**: AES-256-GCM with PBKDF2 key derivation. The server is fully untrusted.
+- **Real-time sync**: Changes appear on other devices within seconds via a persistent WebSocket connection.
+- **Single password**: One password authenticates you with the server and encrypts your vault data.
+- **Sync preview**: See exactly what will change before the first sync applies.
+- **Session tokens**: After the first login, Obsidian reconnects automatically on restart without re-entering your password.
+- **Selective sync**: Choose to sync notes only, or include plugins, settings, and all file types.
+- **Device management**: See all connected devices and kick sessions from the plugin dashboard or server web UI.
+- **Self-hosted**: Your data stays on your own infrastructure.
+- **Desktop and mobile**: Works on all platforms Obsidian supports.
 
 ---
 

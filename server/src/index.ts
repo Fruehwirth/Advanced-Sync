@@ -123,7 +123,7 @@ app.get("/api/sessions", requireAuth, (_req, res) => {
 app.post("/api/sessions/:clientId/revoke", requireAuth, (req, res) => {
   const { clientId } = req.params;
   wsServer?.disconnectClient(clientId);
-  storage.setClientOffline(clientId);
+  storage.deleteClientSession(clientId);
   res.json({ ok: true });
 });
 

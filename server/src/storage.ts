@@ -135,6 +135,10 @@ export class Storage {
     this.db.prepare("UPDATE client_sessions SET is_online = 0, last_seen = ? WHERE client_id = ?").run(Date.now(), clientId);
   }
 
+  deleteClientSession(clientId: string): void {
+    this.db.prepare("DELETE FROM client_sessions WHERE client_id = ?").run(clientId);
+  }
+
   getClientSessions(): ClientSession[] {
     const rows = this.db.prepare("SELECT client_id, device_name, ip, first_seen, last_seen, is_online FROM client_sessions ORDER BY last_seen DESC").all() as Array<{ client_id: string; device_name: string; ip: string; first_seen: number; last_seen: number; is_online: number }>;
     return rows.map((r) => ({ clientId: r.client_id, deviceName: r.device_name, ip: r.ip, firstSeen: r.first_seen, lastSeen: r.last_seen, isOnline: r.is_online === 1 }));
