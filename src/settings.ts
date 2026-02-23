@@ -624,7 +624,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         const cards = body.createDiv("as-strategy-cards");
         const strategies: Array<{ value: InitialSyncStrategy; icon: string; label: string; desc: string; recommended: boolean }> = [
           { value: "pull",  icon: "download",  label: "Pull from server",  desc: "Download everything from the server. Local-only files will be deleted.", recommended: false },
-          { value: "merge", icon: "git-merge", label: "Merge",             desc: "Keep the newest version of each file. Both vaults are combined.", recommended: true },
+          { value: "merge", icon: "git-merge", label: "Merge",             desc: "Merge notes (newest wins), but always use the server's settings and plugins.", recommended: true },
           { value: "push",  icon: "upload",    label: "Push to server",    desc: "Upload this vault to the server. Server-only files will be removed.", recommended: false },
         ];
 
@@ -1021,6 +1021,8 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       getState: () => this.plugin.syncEngine?.state ?? "disconnected",
       maxHistoryItems: 15,
       badgeContainer: logBadgeSlot,
+      onNavigate: (path) => { this.app.workspace.openLinkText(path, "", false); },
+      isConfigured: () => this.plugin.settings.setupComplete,
     });
     activityRenderer.render();
 
@@ -1045,7 +1047,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
           text: `${dev.ip} · ${dev.isOnline ? "online" : formatTimeAgo(dev.lastSeen)}`,
           cls: "as-dash-device-meta",
         });
-        if (dev.isOnline && dev.clientId !== this.plugin.settings.clientId) {
+        if (dev.clientId !== this.plugin.settings.clientId) {
           const kickBtn = row.createEl("button", { cls: "as-btn-kick-icon" });
           setIcon(kickBtn, "x");
           kickBtn.title = `Remove ${dev.deviceName}`;
@@ -1054,7 +1056,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
               this.plugin.syncEngine.kickClient(dev.clientId);
             }
           });
-        } else if (dev.isOnline) {
+        } else if (dev.clientId === this.plugin.settings.clientId) {
           row.createSpan({ text: "This device", cls: "as-badge-online" });
         }
       }

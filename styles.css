@@ -1180,6 +1180,7 @@
 .as-dir-upload   { background: rgba(76, 175, 134, 0.15); color: var(--color-green, #4caf86); }
 .as-dir-download { background: rgba(74, 158, 255, 0.15); color: #4a9eff; }
 .as-dir-delete   { background: rgba(224, 82, 82, 0.15);  color: var(--color-red,  #e05252); }
+.as-dir-create   { background: rgba(255, 193, 7, 0.15);  color: #e6a817; }
 
 /* (ribbon icon removed) */
 
@@ -1317,11 +1318,35 @@
   font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
+  flex-shrink: 0;
+  padding: 1px 2px;
+}
+
+/* Extension badge */
+.as-history-view-ext {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
   background: var(--background-modifier-hover);
-  border-radius: 4px;
-  padding: 1px 5px;
+  border-radius: 3px;
+  padding: 1px 4px;
   flex-shrink: 0;
 }
+
+/* Count flash animation */
+@keyframes as-count-flash {
+  0%   { color: var(--text-normal); }
+  100% { color: var(--text-faint); }
+}
+.as-history-view-count-flash {
+  animation: as-count-flash 0.6s ease-out;
+}
+
+/* Clickable & pending rows */
+.as-history-view-row-clickable { cursor: pointer; }
+.as-history-view-row-pending { opacity: 0.5; }
+.as-history-view-time-pending { font-style: italic; color: var(--text-muted); }
 
 .as-history-view-path {
   font-size: 11px;
@@ -1471,6 +1496,12 @@
 /* Apply step — activity container */
 .as-apply-activity {
   margin-top: 12px;
+}
+
+/* In the wizard Apply step, remove border/background from progress bar */
+.as-apply-activity .as-history-view-progress {
+  border-bottom: none;
+  background: transparent;
 }
 
 /* In the wizard Apply step, keep the recent changes list a fixed height */

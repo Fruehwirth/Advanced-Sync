@@ -104,6 +104,8 @@ export default class AdvancedSyncPlugin extends Plugin {
         },
         () => this.currentState,
         () => this.syncEngine?.activeItems ?? [],
+        (path) => { this.app.workspace.openLinkText(path, "", false); },
+        () => this.settings.setupComplete,
       )
     );
 

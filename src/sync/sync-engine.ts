@@ -34,10 +34,12 @@ import type { AdvancedSyncSettings } from "../types";
 export interface SyncHistoryEntry {
   path: string;
   filename: string;
-  direction: "upload" | "download" | "delete" | "connect" | "disconnect" | "error";
+  direction: "upload" | "download" | "delete" | "create" | "connect" | "disconnect" | "error";
   timestamp: number;
   /** How many consecutive times this same file+direction was recorded. */
   count: number;
+  /** True while the change is queued offline and hasn't been sent yet. */
+  pending?: boolean;
 }
 
 /** Per-file activity tracking during active sync operations. */
@@ -45,7 +47,7 @@ export interface SyncActivityItem {
   id: string;
   path: string;
   filename: string;
-  direction: "upload" | "download" | "delete";
+  direction: "upload" | "download" | "delete" | "create";
   status: "pending" | "active" | "completed" | "failed";
   fileSize?: number;
   error?: string;
@@ -109,6 +111,8 @@ export class SyncEngine {
   private bulkHistoryPending = false;
   /** The actual current state, including "idle" which ConnectionManager never emits. */
   private _state: SyncState = "disconnected";
+  /** Changes queued while offline — flushed on reconnect. */
+  private pendingLocalChanges: FileChange[] = [];
   /** Rolling log of recently synced file changes (newest first). */
   readonly history: SyncHistoryEntry[] = [];
   /** Current sync operation active items (cleared after sync). */
@@ -209,6 +213,13 @@ export class SyncEngine {
     this.pendingDownloads.clear();
     this.activeItems.length = 0;
     this.obsidianFilesChanged = false;
+    // Clear offline queue and remove pending history entries
+    this.pendingLocalChanges = [];
+    const hadPending = this.history.some(e => e.pending);
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].pending) this.history.splice(i, 1);
+    }
+    if (hadPending) this.onHistoryChange();
     delete (this as any)._tempPassword;
   }
 
@@ -297,7 +308,8 @@ export class SyncEngine {
       }
       for (const [fileId, local] of this.localManifest) {
         if (!serverFiles.has(fileId)) {
-          if (!this.shouldSyncObsidianPath(local.path)) continue;
+          // During merge, never upload .obsidian/ — always use server's config
+          if (local.path.startsWith(".obsidian/")) continue;
           plan.toUpload.push({ path: local.path, size: local.size });
         }
       }
@@ -355,6 +367,7 @@ export class SyncEngine {
       this.settings.lastSequence = plan.serverSequence;
       await this.saveSettings();
       this.readyForIncrementalSync = true;
+      await this.flushPendingChanges();
       this._state = "idle";
       this.onStateChange("idle", "Up to date");
       return;
@@ -391,6 +404,7 @@ export class SyncEngine {
       this.pendingSequence = null;
       await this.saveSettings();
       this.readyForIncrementalSync = true;
+      await this.flushPendingChanges();
       this._state = "idle";
       this.activeItems.length = 0;
       this.onActivityChange();
@@ -712,7 +726,8 @@ export class SyncEngine {
           }
           for (const [fileId, local] of this.localManifest) {
             if (!serverFiles.has(fileId)) {
-              if (!this.shouldSyncObsidianPath(local.path)) continue;
+              // During merge, never upload .obsidian/ — always use server's config
+              if (local.path.startsWith(".obsidian/")) continue;
               toUpload.push(local);
             }
           }
@@ -767,6 +782,7 @@ export class SyncEngine {
       this.settings.lastSequence = msg.currentSequence;
       await this.saveSettings();
       this.readyForIncrementalSync = true;
+      await this.flushPendingChanges();
       this._state = "idle";
       this.onStateChange("idle", "Up to date");
       return;
@@ -803,6 +819,7 @@ export class SyncEngine {
       this.pendingSequence = null;
       await this.saveSettings();
       this.readyForIncrementalSync = true;
+      await this.flushPendingChanges();
       this._state = "idle";
       this.activeItems.length = 0;
       this.onActivityChange();
@@ -821,14 +838,14 @@ export class SyncEngine {
   }
 
   /** Record a file change in the history log. */
-  private recordHistory(path: string, direction: SyncHistoryEntry["direction"]): void {
-    if ((direction === "upload" || direction === "download" || direction === "delete") && path.startsWith(".obsidian/")) {
+  private recordHistory(path: string, direction: SyncHistoryEntry["direction"], pending = false): void {
+    if ((direction === "upload" || direction === "download" || direction === "delete" || direction === "create") && path.startsWith(".obsidian/")) {
       this.obsidianFilesChanged = true;
     }
     const LOOK_BACK = 5;
     for (let i = 0; i < Math.min(LOOK_BACK, this.history.length); i++) {
       const entry = this.history[i];
-      if (entry.path === path && entry.direction === direction) {
+      if (entry.path === path && entry.direction === direction && !!entry.pending === pending) {
         entry.count++;
         entry.timestamp = Date.now();
         if (i > 0) {
@@ -845,6 +862,7 @@ export class SyncEngine {
       direction,
       timestamp: Date.now(),
       count: 1,
+      pending: pending || undefined,
     });
     if (this.history.length > MAX_HISTORY) this.history.pop();
     this.notifyHistoryChange(this.pendingInitialDownloads > 0);
@@ -858,7 +876,7 @@ export class SyncEngine {
   }
 
   /** Upload a local file to the server. */
-  private async uploadFile(filePath: string): Promise<void> {
+  private async uploadFile(filePath: string, direction: "upload" | "create" = "upload"): Promise<void> {
     if (!this.vaultKey) return;
 
     try {
@@ -895,7 +913,7 @@ export class SyncEngine {
       // Send raw encrypted blob (binary frame) — no base64/JSON wrapping
       this.connection.sendBinary(encrypted);
 
-      this.recordHistory(filePath, "upload");
+      this.recordHistory(filePath, direction);
 
       // Update local manifest
       this.localManifest.set(fileId, {
@@ -1025,6 +1043,7 @@ export class SyncEngine {
           }
 
           this.readyForIncrementalSync = true;
+          void this.flushPendingChanges();
           this._state = "idle";
           this.activeItems.length = 0;
           this.onActivityChange();
@@ -1086,12 +1105,30 @@ export class SyncEngine {
 
   /** Handle a local file change (from file watcher). */
   private async handleLocalChange(change: FileChange): Promise<void> {
-    if (!this.vaultKey || !this.readyForIncrementalSync) return;
+    if (!this.vaultKey) return;
 
+    // If not ready for incremental sync, queue the change for later
+    if (!this.connection.isConnected || !this.readyForIncrementalSync) {
+      // Deduplicate by path — keep the latest change per path
+      this.pendingLocalChanges = this.pendingLocalChanges.filter(c => c.path !== change.path);
+      this.pendingLocalChanges.push(change);
+      // Record pending history entry
+      const dir = change.type === "delete" ? "delete" : change.type === "create" ? "create" : "upload";
+      this.recordHistory(change.path, dir, true);
+      return;
+    }
+
+    await this.executeLocalChange(change);
+  }
+
+  /** Execute a single local change (upload/delete/rename). */
+  private async executeLocalChange(change: FileChange): Promise<void> {
     switch (change.type) {
       case "create":
+        await this.uploadFile(change.path, "create");
+        break;
       case "modify":
-        await this.uploadFile(change.path);
+        await this.uploadFile(change.path, "upload");
         break;
       case "delete":
         await this.handleLocalDelete(change.path);
@@ -1100,8 +1137,23 @@ export class SyncEngine {
         if (change.oldPath) {
           await this.handleLocalDelete(change.oldPath);
         }
-        await this.uploadFile(change.path);
+        await this.uploadFile(change.path, "create");
         break;
+    }
+  }
+
+  /** Flush queued offline changes after reconnecting. */
+  private async flushPendingChanges(): Promise<void> {
+    if (this.pendingLocalChanges.length === 0) return;
+    const changes = [...this.pendingLocalChanges];
+    this.pendingLocalChanges = [];
+    // Clear pending flags on history entries for these paths
+    for (const entry of this.history) {
+      if (entry.pending) entry.pending = false;
+    }
+    this.onHistoryChange();
+    for (const change of changes) {
+      await this.executeLocalChange(change);
     }
   }
 
@@ -1116,6 +1168,7 @@ export class SyncEngine {
       type: MessageType.FILE_DELETE,
       fileId,
     });
+    this.recordHistory(filePath, "delete");
   }
 
   /** Write a file to the vault, suppressing the file watcher. */

@@ -11,6 +11,7 @@ const DIRECTION_ICON: Record<string, string> = {
   upload:     "arrow-up",
   download:   "arrow-down",
   delete:     "trash-2",
+  create:     "plus",
   connect:    "wifi",
   disconnect: "wifi-off",
   error:      "alert-triangle",
@@ -56,6 +57,10 @@ export interface SyncActivityRendererOptions {
   maxHistoryItems?: number;
   /** If provided, the status badge is rendered here instead of inside the scroll container. */
   badgeContainer?: HTMLElement;
+  /** Called when the user clicks a file entry to navigate to it. */
+  onNavigate?: (path: string) => void;
+  /** Returns true if the plugin has a server configured. */
+  isConfigured?: () => boolean;
 }
 
 export class SyncActivityRenderer {
@@ -220,12 +225,35 @@ export class SyncActivityRenderer {
     const maxItems = this.options.maxHistoryItems ?? 50;
 
     if (history.length === 0) {
-      this.historySection.createDiv({ text: "No changes yet", cls: "as-history-view-empty" });
+      // Show contextual empty state
+      const state = this.options.getState();
+      const configured = this.options.isConfigured?.() ?? true;
+      if (!configured && state === "disconnected") {
+        this.historySection.createDiv({
+          text: "Set up a server in Settings to see sync activity",
+          cls: "as-history-view-empty",
+        });
+      } else {
+        this.historySection.createDiv({ text: "No changes yet", cls: "as-history-view-empty" });
+      }
       return;
     }
 
+    const isFileDirection = (d: string) => ["upload", "download", "delete", "create"].includes(d);
+
     for (const entry of history.slice(0, maxItems)) {
-      const row = this.historySection.createDiv("as-history-view-row");
+      const rowClasses = ["as-history-view-row"];
+      if (entry.pending) rowClasses.push("as-history-view-row-pending");
+      if (isFileDirection(entry.direction) && this.options.onNavigate && !entry.pending && entry.direction !== "delete") {
+        rowClasses.push("as-history-view-row-clickable");
+      }
+      const row = this.historySection.createDiv(rowClasses.join(" "));
+
+      // Click-to-navigate for file entries (not deletes, not pending)
+      if (isFileDirection(entry.direction) && this.options.onNavigate && !entry.pending && entry.direction !== "delete") {
+        const navigate = this.options.onNavigate;
+        row.addEventListener("click", () => navigate(entry.path));
+      }
 
       const icon = row.createSpan("as-history-view-icon");
       icon.addClass(`as-dir-${entry.direction}`);
@@ -233,16 +261,35 @@ export class SyncActivityRenderer {
 
       const info = row.createDiv("as-history-view-info");
       const nameRow = info.createDiv("as-history-view-name-row");
-      nameRow.createSpan({ text: entry.filename, cls: "as-history-view-name" });
-      if (entry.count > 1) {
-        nameRow.createSpan({ text: `\u00d7${entry.count}`, cls: "as-history-view-count" });
+
+      // Split filename and extension
+      const dotIdx = entry.filename.lastIndexOf(".");
+      const hasExt = dotIdx > 0;
+      const displayName = hasExt ? entry.filename.substring(0, dotIdx) : entry.filename;
+      const ext = hasExt ? entry.filename.substring(dotIdx + 1) : "";
+
+      nameRow.createSpan({ text: displayName, cls: "as-history-view-name" });
+
+      // Show extension badge for non-.md files
+      if (hasExt && ext.toLowerCase() !== "md") {
+        nameRow.createSpan({ text: ext.toUpperCase(), cls: "as-history-view-ext" });
       }
 
-      if (["upload", "download", "delete"].includes(entry.direction)) {
+      if (entry.count > 1) {
+        const countEl = nameRow.createSpan({ text: `\u00d7${entry.count}`, cls: "as-history-view-count as-history-view-count-flash" });
+        // Remove flash class after animation completes
+        countEl.addEventListener("animationend", () => countEl.removeClass("as-history-view-count-flash"), { once: true });
+      }
+
+      if (isFileDirection(entry.direction)) {
         info.createDiv({ text: entry.path, cls: "as-history-view-path" });
       }
 
-      row.createSpan({ text: formatTimeAgo(entry.timestamp), cls: "as-history-view-time" });
+      if (entry.pending) {
+        row.createSpan({ text: "waiting", cls: "as-history-view-time as-history-view-time-pending" });
+      } else {
+        row.createSpan({ text: formatTimeAgo(entry.timestamp), cls: "as-history-view-time" });
+      }
     }
   }
 }
