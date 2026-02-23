@@ -429,6 +429,11 @@
   margin-top: 16px;
 }
 
+/* Secondary full-width button below primary CTA */
+.as-start-btn + .as-start-btn {
+  margin-top: 8px;
+}
+
 /* --- Loading Overlay --- */
 .as-overlay {
   position: fixed;
@@ -1466,6 +1471,12 @@
 /* Apply step — activity container */
 .as-apply-activity {
   margin-top: 12px;
+}
+
+/* In the wizard Apply step, keep the recent changes list a fixed height */
+.as-apply-activity .as-activity-history {
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 /* ============================================================

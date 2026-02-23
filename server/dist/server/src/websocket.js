@@ -25,6 +25,7 @@ class SyncWebSocketServer {
         this.clients = new Map();
         this.uiSubscribers = new Set();
         this.pingInterval = null;
+        this.acceptingConnections = true;
         this.storage = storage;
         this.auth = auth;
         this.config = config;
@@ -60,6 +61,10 @@ class SyncWebSocketServer {
         this.pingInterval = setInterval(() => this.pingClients(), 30000);
     }
     handleUIConnection(ws, req) {
+        if (!this.acceptingConnections) {
+            ws.close(1012, "Server reset");
+            return;
+        }
         if (!this.auth.isInitialized()) {
             ws.close(4401, "Server not initialized");
             return;
@@ -79,6 +84,10 @@ class SyncWebSocketServer {
         });
     }
     handleConnection(ws, req) {
+        if (!this.acceptingConnections) {
+            ws.close(1012, "Server reset");
+            return;
+        }
         const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
             req.socket.remoteAddress ||
             "unknown";
@@ -94,6 +103,13 @@ class SyncWebSocketServer {
         };
         this.clients.set(ws, client);
         ws.on("message", (data, isBinary) => {
+            if (!this.acceptingConnections) {
+                try {
+                    ws.close(1012, "Server reset");
+                }
+                catch { }
+                return;
+            }
             client.lastActivity = Date.now();
             if (isBinary) {
                 this.handleBinaryMessage(client, data);
@@ -126,6 +142,13 @@ class SyncWebSocketServer {
         }, 10000);
     }
     handleTextMessage(client, raw) {
+        if (!this.acceptingConnections) {
+            try {
+                client.ws.close(1012, "Server reset");
+            }
+            catch { }
+            return;
+        }
         let msg;
         try {
             msg = JSON.parse(raw);
@@ -167,6 +190,13 @@ class SyncWebSocketServer {
         }
     }
     handleBinaryMessage(client, data) {
+        if (!this.acceptingConnections) {
+            try {
+                client.ws.close(1012, "Server reset");
+            }
+            catch { }
+            return;
+        }
         if (!client.authenticated || !client.pendingUpload) {
             return;
         }
@@ -535,6 +565,34 @@ class SyncWebSocketServer {
         }
         this.wss.close();
         this.uiWss.close();
+    }
+    beginReset() {
+        this.acceptingConnections = false;
+        for (const [ws] of this.clients) {
+            try {
+                ws.close(1012, "Server reset");
+            }
+            catch { }
+            try {
+                ws.terminate?.();
+            }
+            catch { }
+        }
+        this.clients.clear();
+        for (const ws of this.uiSubscribers) {
+            try {
+                ws.close(1012, "Server reset");
+            }
+            catch { }
+            try {
+                ws.terminate?.();
+            }
+            catch { }
+        }
+        this.uiSubscribers.clear();
+    }
+    endReset() {
+        this.acceptingConnections = true;
     }
 }
 exports.SyncWebSocketServer = SyncWebSocketServer;

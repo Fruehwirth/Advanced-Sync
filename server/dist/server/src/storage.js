@@ -9,14 +9,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Storage = void 0;
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
+const crypto_1 = __importDefault(require("crypto"));
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
 class Storage {
     constructor(config) {
-        const dbPath = path_1.default.join(config.dataDir, "vault-sync.db");
-        this.blobDir = path_1.default.join(config.dataDir, "blobs");
-        fs_1.default.mkdirSync(config.dataDir, { recursive: true });
+        this.dataDir = config.dataDir;
+        this.dbPath = path_1.default.join(this.dataDir, "vault-sync.db");
+        this.blobDir = path_1.default.join(this.dataDir, "blobs");
+        fs_1.default.mkdirSync(this.dataDir, { recursive: true });
         fs_1.default.mkdirSync(this.blobDir, { recursive: true });
-        this.db = new better_sqlite3_1.default(dbPath);
+        this.db = new better_sqlite3_1.default(this.dbPath);
         this.db.pragma("journal_mode = WAL");
         this.db.pragma("foreign_keys = ON");
         this.initSchema();
@@ -189,8 +191,7 @@ class Storage {
     }
     reset() {
         this.db.exec("DELETE FROM files");
-        // Keep server password hash so reset doesn't lock you out.
-        this.db.exec("DELETE FROM vault_meta WHERE key != 'server_password_hash'");
+        this.db.exec("DELETE FROM vault_meta");
         this.db.exec("DELETE FROM client_sessions");
         this.db.exec("DELETE FROM activity_log");
         this.db.exec("DELETE FROM auth_tokens");
@@ -200,6 +201,49 @@ class Storage {
         }
         catch { }
         console.log("[Storage] Reset complete.");
+    }
+    /** Completely wipe all server data on disk, including password, TLS certs, and server-id. */
+    wipeAll() {
+        this.db.close();
+        // Remove SQLite database (and WAL/shm sidecars)
+        try {
+            fs_1.default.rmSync(this.dbPath, { force: true });
+        }
+        catch { }
+        try {
+            fs_1.default.rmSync(this.dbPath + "-wal", { force: true });
+        }
+        catch { }
+        try {
+            fs_1.default.rmSync(this.dbPath + "-shm", { force: true });
+        }
+        catch { }
+        // Remove blobs and TLS certs
+        try {
+            fs_1.default.rmSync(this.blobDir, { recursive: true, force: true });
+        }
+        catch { }
+        try {
+            fs_1.default.rmSync(path_1.default.join(this.dataDir, "tls"), { recursive: true, force: true });
+        }
+        catch { }
+        // Remove server id so a new one is generated on next start
+        try {
+            fs_1.default.rmSync(path_1.default.join(this.dataDir, "server-id"), { force: true });
+        }
+        catch { }
+        // Recreate base directories
+        fs_1.default.mkdirSync(this.dataDir, { recursive: true });
+        fs_1.default.mkdirSync(this.blobDir, { recursive: true });
+        // Persist a new server id immediately
+        const newServerId = crypto_1.default.randomUUID();
+        fs_1.default.writeFileSync(path_1.default.join(this.dataDir, "server-id"), newServerId);
+        this.db = new better_sqlite3_1.default(this.dbPath);
+        this.db.pragma("journal_mode = WAL");
+        this.db.pragma("foreign_keys = ON");
+        this.initSchema();
+        console.log("[Storage] Full wipe complete.");
+        return newServerId;
     }
     getBlobPath(fileId) {
         return path_1.default.join(this.blobDir, fileId.substring(0, 2), fileId);

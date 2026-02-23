@@ -17,8 +17,11 @@
   <div class="app-layout">
     <nav class="sidebar">
       <div class="sidebar-logo">
-        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        <svg class="logo-icon sync-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M17 1l4 4-4 4"/>
+          <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+          <path d="M7 23l-4-4 4-4"/>
+          <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
         </svg>
         <span>Advanced Sync</span>
       </div>
@@ -103,16 +106,22 @@
   <div id="login-overlay" class="login-overlay">
     <div class="login-card">
       <div class="login-logo">
-        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        <svg class="logo-icon sync-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M17 1l4 4-4 4"/>
+          <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+          <path d="M7 23l-4-4 4-4"/>
+          <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
         </svg>
         <span>Advanced Sync</span>
       </div>
-      <div id="init-panel" class="hidden">
+      <div id="init-panel">
         <h1 class="login-title">Server Setup</h1>
-        <p class="login-desc">This server has not been initialized yet. Complete setup from the Advanced Sync plugin to set the server password, then refresh this page.</p>
+        <p class="login-desc">This server has not been initialized yet.</p>
+        <p class="login-desc">To initialize it, run the setup wizard in the Advanced Sync plugin:</p>
+        <p class="login-desc">Obsidian -> Settings -> Advanced Sync -> Setup Wizard -> enter this server address -> set a server password -> finish setup.</p>
+        <p class="login-desc">Then reload this page to sign in.</p>
       </div>
-      <div id="login-panel">
+      <div id="login-panel" class="hidden">
         <h1 class="login-title">Dashboard</h1>
         <p class="login-desc">Enter the server password to continue.</p>
         <form id="login-form" autocomplete="on">

@@ -46,6 +46,13 @@ function apiFetch(url, options) {
   options.headers=options.headers||{};
   if(authHash) options.headers["Authorization"]="Bearer "+authHash;
   return fetch(url, options).then(function(res) {
+    if(res.status===428){
+      sessionStorage.removeItem(AUTH_KEY);
+      authHash=null;
+      if(ws){ws.onclose=null;ws.close();}
+      showInit();
+      throw new Error("Server not initialized");
+    }
     if(res.status===401) {
       sessionStorage.removeItem(AUTH_KEY);
       authHash=null;
@@ -78,14 +85,17 @@ function showInit() {
   if(loginPanel) loginPanel.classList.add("hidden");
   if(initPanel) initPanel.classList.remove("hidden");
   loginOverlay.classList.remove("hidden");
+  if(loginErrorEl) loginErrorEl.classList.add("hidden");
+  if(loginSubmitBtn){loginSubmitBtn.disabled=true;loginSubmitBtn.textContent="Sign In";}
 }
 
 function fetchInitStatus() {
-  return fetch("/api/init-status").then(function(r){return r.json();}).catch(function(){return {initialized:true};});
+  return fetch("/api/init-status").then(function(r){return r.json();}).catch(function(){return {initialized:false};});
 }
 
 loginForm.addEventListener("submit", function(e) {
   e.preventDefault();
+  if(initPanel && !initPanel.classList.contains("hidden")) return;
   var password=loginPasswordInput.value;
   if(!password) return;
   loginSubmitBtn.disabled=true;
@@ -101,7 +111,12 @@ loginForm.addEventListener("submit", function(e) {
       body:JSON.stringify({passwordHash:hash})
     });
   }).then(function(res) {
-    if(res.status===428) throw new Error("Server not initialized. Finish setup in the plugin first.");
+    if(res.status===428){
+      showInit();
+      var err=new Error("Server not initialized");
+      err.silent=true;
+      throw err;
+    }
     if(!res.ok) return res.json().then(function(d){throw new Error(d.error||"Invalid password");});
     return res.json();
   }).then(function() {
@@ -110,6 +125,7 @@ loginForm.addEventListener("submit", function(e) {
     loginOverlay.classList.add("hidden");
     initDashboard();
   }).catch(function(err) {
+    if(err && err.silent) return;
     loginErrorEl.textContent=err.message||"Login failed";
     loginErrorEl.classList.remove("hidden");
     loginSubmitBtn.disabled=false;
@@ -181,6 +197,12 @@ function connect() {
   ws=new WebSocket(proto+"//"+location.host+"/ui?auth="+encodeURIComponent(authHash||""));
   ws.onopen=function(){setStatus("connected","Connected");};
   ws.onclose=function(e){
+    if(e.code===4401){
+      sessionStorage.removeItem(AUTH_KEY);
+      authHash=null;
+      showInit();
+      return;
+    }
     if(e.code===4003){
       sessionStorage.removeItem(AUTH_KEY);
       authHash=null;
@@ -402,9 +424,10 @@ function esc(str){var d=document.createElement("div");d.textContent=str||"";retu
 fetchInitStatus().then(function(s){
   if(!s || !s.initialized){
     showInit();
-    setInterval(function(){
+    var pollInit=setInterval(function(){
       fetchInitStatus().then(function(s2){
         if(s2 && s2.initialized){
+          clearInterval(pollInit);
           showLogin();
         }
       });

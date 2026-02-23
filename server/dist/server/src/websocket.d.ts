@@ -21,6 +21,7 @@ export declare class SyncWebSocketServer {
     private auth;
     private config;
     private pingInterval;
+    private acceptingConnections;
     constructor(server: http.Server | https.Server, storage: Storage, auth: Auth, config: ServerConfig);
     private handleUIConnection;
     private handleConnection;
@@ -47,4 +48,6 @@ export declare class SyncWebSocketServer {
     /** Forward Obsidian theme variables to all connected web UI subscribers. */
     broadcastTheme(theme: Record<string, string>): void;
     stop(): void;
+    beginReset(): void;
+    endReset(): void;
 }

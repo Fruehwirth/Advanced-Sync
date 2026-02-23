@@ -85,6 +85,8 @@ export class SyncEngine {
   private localManifest: Map<string, LocalFileInfo> = new Map();
   private pendingDownloads: Map<string, FileDownloadResponseMessage> = new Map();
   private pluginFilesChanged = false;
+  /** True if any .obsidian/ file was changed during the current/last sync. */
+  private obsidianFilesChanged = false;
   private saveSettings: () => Promise<void>;
   /** True once the initial sync completes and we are ready for incremental changes. */
   private readyForIncrementalSync = false;
@@ -206,7 +208,18 @@ export class SyncEngine {
     this.localManifest.clear();
     this.pendingDownloads.clear();
     this.activeItems.length = 0;
+    this.obsidianFilesChanged = false;
     delete (this as any)._tempPassword;
+  }
+
+  /** Whether any .obsidian/ files have changed during sync. */
+  get hasObsidianFilesChanged(): boolean {
+    return this.obsidianFilesChanged;
+  }
+
+  /** Clear the .obsidian/ changed flag (UI acknowledgement). */
+  clearObsidianFilesChanged(): void {
+    this.obsidianFilesChanged = false;
   }
 
   /** Force a full resync. */
@@ -265,8 +278,11 @@ export class SyncEngine {
         const local = this.localManifest.get(fileId);
         if (!local) {
           const meta = await decryptMetadata<{ path: string }>(entry.encryptedMeta, this.vaultKey);
-          plan.toDownload.push({ fileId: entry.fileId, path: meta?.path ?? entry.fileId, size: entry.size });
+          const path = meta?.path ?? entry.fileId;
+          if (!this.shouldSyncObsidianPath(path)) continue;
+          plan.toDownload.push({ fileId: entry.fileId, path, size: entry.size });
         } else if (local.path.startsWith(".obsidian/")) {
+          if (!this.shouldSyncObsidianPath(local.path)) continue;
           const meta = await decryptMetadata<{ path: string }>(entry.encryptedMeta, this.vaultKey);
           plan.toDownload.push({ fileId: entry.fileId, path: meta?.path ?? local.path, size: entry.size });
         } else {
@@ -280,7 +296,8 @@ export class SyncEngine {
         }
       }
       for (const [fileId, local] of this.localManifest) {
-        if (!serverFiles.has(fileId) && !local.path.startsWith(".obsidian/")) {
+        if (!serverFiles.has(fileId)) {
+          if (!this.shouldSyncObsidianPath(local.path)) continue;
           plan.toUpload.push({ path: local.path, size: local.size });
         }
       }
@@ -686,7 +703,7 @@ export class SyncEngine {
             if (!local) {
               toDownload.push(entry);
             } else if (local.path.startsWith(".obsidian/")) {
-              toDownload.push(entry);
+              if (this.shouldSyncObsidianPath(local.path)) toDownload.push(entry);
             } else {
               const winner = resolveConflict(local.mtime, entry.mtime);
               if (winner === "remote") toDownload.push(entry);
@@ -695,7 +712,7 @@ export class SyncEngine {
           }
           for (const [fileId, local] of this.localManifest) {
             if (!serverFiles.has(fileId)) {
-              if (local.path.startsWith(".obsidian/")) continue;
+              if (!this.shouldSyncObsidianPath(local.path)) continue;
               toUpload.push(local);
             }
           }
@@ -805,6 +822,9 @@ export class SyncEngine {
 
   /** Record a file change in the history log. */
   private recordHistory(path: string, direction: SyncHistoryEntry["direction"]): void {
+    if ((direction === "upload" || direction === "download" || direction === "delete") && path.startsWith(".obsidian/")) {
+      this.obsidianFilesChanged = true;
+    }
     const LOOK_BACK = 5;
     for (let i = 0; i < Math.min(LOOK_BACK, this.history.length); i++) {
       const entry = this.history[i];
@@ -828,6 +848,13 @@ export class SyncEngine {
     });
     if (this.history.length > MAX_HISTORY) this.history.pop();
     this.notifyHistoryChange(this.pendingInitialDownloads > 0);
+  }
+
+  /** Check if an .obsidian/ path is allowed by current sync toggles. */
+  private shouldSyncObsidianPath(path: string): boolean {
+    if (!path.startsWith(".obsidian/")) return true;
+    if (path.startsWith(".obsidian/plugins/")) return this.settings.syncPlugins;
+    return this.settings.syncSettings;
   }
 
   /** Upload a local file to the server. */

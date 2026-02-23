@@ -19,6 +19,11 @@ class Auth {
     isInitialized() {
         return !!this.passwordHash;
     }
+    /** Reload auth state from persisted storage (used after full wipe). */
+    reload(storage) {
+        this.passwordHash = storage.getServerPasswordHash();
+        this.rateLimits.clear();
+    }
     /** One-time initialization. Stores the password hash and enables auth. */
     initialize(passwordHash, storage) {
         if (this.passwordHash) {

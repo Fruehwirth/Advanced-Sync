@@ -39,6 +39,7 @@ Or with `docker-compose.yml`:
 services:
   advanced-sync:
     image: fruehwirth/advanced-sync:latest
+    container_name: obsidian_advanced_sync
     ports:
       - "8443:8443"        # WebSocket sync + web UI
       - "21547:21547/udp"  # LAN auto-discovery

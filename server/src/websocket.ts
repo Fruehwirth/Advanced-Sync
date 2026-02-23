@@ -57,6 +57,7 @@ export class SyncWebSocketServer {
   private auth: Auth;
   private config: ServerConfig;
   private pingInterval: NodeJS.Timeout | null = null;
+  private acceptingConnections = true;
 
   constructor(
     server: http.Server | https.Server,
@@ -102,6 +103,10 @@ export class SyncWebSocketServer {
   }
 
   private handleUIConnection(ws: WebSocket, req: IncomingMessage): void {
+    if (!this.acceptingConnections) {
+      ws.close(1012, "Server reset");
+      return;
+    }
     if (!this.auth.isInitialized()) {
       ws.close(4401, "Server not initialized");
       return;
@@ -124,6 +129,10 @@ export class SyncWebSocketServer {
   }
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
+    if (!this.acceptingConnections) {
+      ws.close(1012, "Server reset");
+      return;
+    }
     const ip =
       (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
       req.socket.remoteAddress ||
@@ -142,6 +151,10 @@ export class SyncWebSocketServer {
     this.clients.set(ws, client);
 
     ws.on("message", (data, isBinary) => {
+      if (!this.acceptingConnections) {
+        try { ws.close(1012, "Server reset"); } catch {}
+        return;
+      }
       client.lastActivity = Date.now();
 
       if (isBinary) {
@@ -178,6 +191,10 @@ export class SyncWebSocketServer {
   }
 
   private handleTextMessage(client: ConnectedClient, raw: string): void {
+    if (!this.acceptingConnections) {
+      try { client.ws.close(1012, "Server reset"); } catch {}
+      return;
+    }
     let msg: ProtocolMessage;
     try {
       msg = JSON.parse(raw);
@@ -221,6 +238,10 @@ export class SyncWebSocketServer {
   }
 
   private handleBinaryMessage(client: ConnectedClient, data: Buffer): void {
+    if (!this.acceptingConnections) {
+      try { client.ws.close(1012, "Server reset"); } catch {}
+      return;
+    }
     if (!client.authenticated || !client.pendingUpload) {
       return;
     }
@@ -660,5 +681,25 @@ export class SyncWebSocketServer {
     }
     this.wss.close();
     this.uiWss.close();
+  }
+
+  beginReset(): void {
+    this.acceptingConnections = false;
+
+    for (const [ws] of this.clients) {
+      try { ws.close(1012, "Server reset"); } catch {}
+      try { (ws as any).terminate?.(); } catch {}
+    }
+    this.clients.clear();
+
+    for (const ws of this.uiSubscribers) {
+      try { ws.close(1012, "Server reset"); } catch {}
+      try { (ws as any).terminate?.(); } catch {}
+    }
+    this.uiSubscribers.clear();
+  }
+
+  endReset(): void {
+    this.acceptingConnections = true;
   }
 }

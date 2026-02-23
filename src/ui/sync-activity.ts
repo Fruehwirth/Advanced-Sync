@@ -105,6 +105,13 @@ export class SyncActivityRenderer {
     this.renderBadge();
   }
 
+  /** Incremental update: just refresh history section. */
+  refreshHistory(): void {
+    if (this.historySection) {
+      this.renderHistory();
+    }
+  }
+
   /** Update progress bar. */
   setProgress(current: number, total: number, detail: string): void {
     if (!this.progressEl || !this.progressBarFill || !this.progressTextEl) return;

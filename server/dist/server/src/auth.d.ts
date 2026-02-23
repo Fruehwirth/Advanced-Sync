@@ -7,6 +7,8 @@ export declare class Auth {
     private rateLimits;
     constructor(storage: Storage);
     isInitialized(): boolean;
+    /** Reload auth state from persisted storage (used after full wipe). */
+    reload(storage: Storage): void;
     /** One-time initialization. Stores the password hash and enables auth. */
     initialize(passwordHash: string, storage: Storage): {
         ok: boolean;

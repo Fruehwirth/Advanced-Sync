@@ -6,6 +6,8 @@ import type { ServerConfig } from "./config";
 export declare class Storage {
     private db;
     private blobDir;
+    private dataDir;
+    private dbPath;
     constructor(config: ServerConfig);
     private initSchema;
     getVaultSalt(): string | null;
@@ -57,6 +59,8 @@ export declare class Storage {
     }>;
     clearLog(): void;
     reset(): void;
+    /** Completely wipe all server data on disk, including password, TLS certs, and server-id. */
+    wipeAll(): string;
     private getBlobPath;
     close(): void;
 }

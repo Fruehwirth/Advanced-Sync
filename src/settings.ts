@@ -3,7 +3,7 @@
  * Includes the full inline setup wizard (single password, sync preview) and the dashboard.
  */
 
-import { App, Modal, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import { sha256String } from "./crypto/encryption";
 import { discoverServers, isDiscoveryAvailable } from "./network/discovery";
 import type { InitialSyncStrategy } from "./types";
@@ -167,16 +167,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   // ================================================================
 
   private renderWizard(container: HTMLElement): void {
-    const stepNames = [
-      "Welcome",
-      "Server",
-      this.serverInitialized === false ? "Set Password" : "Password",
-      "Device",
-      "Sync",
-      "Summary",
-      "Preview",
-      "Apply",
-    ];
+    const stepNames = ["Welcome", "Server", "Password", "Device", "Sync", "Summary", "Preview", "Apply"];
     const stepIcons = ["refresh-cw", "server", "lock", "monitor", "sliders", "list", "eye", "check-circle"];
 
     // Step indicator (dots + labels)
@@ -418,12 +409,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         initLabel.style.display = "none";
       }
 
-      // Keep the indicator label in sync without a full re-render.
-      const stepLabels = this.containerEl.querySelectorAll(".as-wizard-step-label");
-      if (stepLabels.length >= 3) {
-        (stepLabels[2] as HTMLElement).textContent = this.serverInitialized === false ? "Set Password" : "Password";
-      }
-
       updateNextBtn();
     };
 
@@ -478,7 +463,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
     const g = body.createDiv("as-field-group");
     const labelRow = g.createDiv("as-field-label-row");
-    labelRow.createEl("label", { text: this.serverInitialized === false ? "Set Password" : "Password", cls: "as-field-label" });
+    labelRow.createEl("label", { text: "Password", cls: "as-field-label" });
     const pwStatus = labelRow.createSpan("as-server-status-inline");
 
     const wrapper = g.createDiv("as-password-wrapper");
@@ -612,41 +597,51 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
   private wRenderSyncSetup(body: HTMLElement): void {
 
-    const allFiles = this.app.vault.getFiles();
-    const vaultFiles = allFiles.filter(f => !f.path.startsWith(".obsidian/plugins/advanced-sync/"));
-    const isEmpty = vaultFiles.length === 0;
-
-    if (isEmpty) {
-      body.createEl("p", { text: "This vault is empty. All files from the server will be downloaded.", cls: "as-wizard-desc" });
-      this.wStrategy = "pull";
-    } else {
+    // New server: initial sync is always "push" (upload this vault) to initialize it.
+    // Hide pull/merge options entirely.
+    if (this.serverInitialized === false) {
+      this.wStrategy = "push";
       body.createEl("p", {
-        text: `This vault has ${vaultFiles.length} file${vaultFiles.length !== 1 ? "s" : ""}. How should it sync with the server?`,
+        text: "This server is not initialized yet. Advanced Sync will initialize it by uploading this vault.",
         cls: "as-wizard-desc",
       });
-    }
+    } else {
+      const allFiles = this.app.vault.getFiles();
+      const vaultFiles = allFiles.filter(f => !f.path.startsWith(".obsidian/plugins/advanced-sync/"));
+      const isEmpty = vaultFiles.length === 0;
 
-    if (!isEmpty) {
-      const cards = body.createDiv("as-strategy-cards");
-      const strategies: Array<{ value: InitialSyncStrategy; icon: string; label: string; desc: string; recommended: boolean }> = [
-        { value: "pull",  icon: "download",  label: "Pull from server",  desc: "Download everything from the server. Local-only files will be deleted.", recommended: false },
-        { value: "merge", icon: "git-merge", label: "Merge",             desc: "Keep the newest version of each file. Both vaults are combined.", recommended: true },
-        { value: "push",  icon: "upload",    label: "Push to server",    desc: "Upload this vault to the server. Server-only files will be removed.", recommended: false },
-      ];
-
-      for (const s of strategies) {
-        const card = cards.createDiv("as-strategy-card");
-        if (s.value === this.wStrategy) card.addClass("selected");
-        const hdr = card.createDiv("as-strategy-card-header");
-        setIcon(hdr.createSpan("as-strategy-icon"), s.icon);
-        hdr.createSpan({ text: s.label, cls: "as-strategy-label" });
-        if (s.recommended) hdr.createSpan({ text: "Recommended", cls: "as-strategy-badge" });
-        card.createDiv({ text: s.desc, cls: "as-strategy-desc" });
-        card.addEventListener("click", () => {
-          this.wStrategy = s.value;
-          cards.querySelectorAll(".as-strategy-card").forEach(el => el.removeClass("selected"));
-          card.addClass("selected");
+      if (isEmpty) {
+        body.createEl("p", { text: "This vault is empty. All files from the server will be downloaded.", cls: "as-wizard-desc" });
+        this.wStrategy = "pull";
+      } else {
+        body.createEl("p", {
+          text: `This vault has ${vaultFiles.length} file${vaultFiles.length !== 1 ? "s" : ""}. How should it sync with the server?`,
+          cls: "as-wizard-desc",
         });
+      }
+
+      if (!isEmpty) {
+        const cards = body.createDiv("as-strategy-cards");
+        const strategies: Array<{ value: InitialSyncStrategy; icon: string; label: string; desc: string; recommended: boolean }> = [
+          { value: "pull",  icon: "download",  label: "Pull from server",  desc: "Download everything from the server. Local-only files will be deleted.", recommended: false },
+          { value: "merge", icon: "git-merge", label: "Merge",             desc: "Keep the newest version of each file. Both vaults are combined.", recommended: true },
+          { value: "push",  icon: "upload",    label: "Push to server",    desc: "Upload this vault to the server. Server-only files will be removed.", recommended: false },
+        ];
+
+        for (const s of strategies) {
+          const card = cards.createDiv("as-strategy-card");
+          if (s.value === this.wStrategy) card.addClass("selected");
+          const hdr = card.createDiv("as-strategy-card-header");
+          setIcon(hdr.createSpan("as-strategy-icon"), s.icon);
+          hdr.createSpan({ text: s.label, cls: "as-strategy-label" });
+          if (s.recommended) hdr.createSpan({ text: "Recommended", cls: "as-strategy-badge" });
+          card.createDiv({ text: s.desc, cls: "as-strategy-desc" });
+          card.addEventListener("click", () => {
+            this.wStrategy = s.value;
+            cards.querySelectorAll(".as-strategy-card").forEach(el => el.removeClass("selected"));
+            card.addClass("selected");
+          });
+        }
       }
     }
 
@@ -793,22 +788,65 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         this.wStep = 0; // Exit wizard, fall through to dashboard
         this.display();
       });
+
+      if (this.plugin.syncEngine.hasObsidianFilesChanged) {
+        const restartBtn = body.createEl("button", { text: "Restart Obsidian", cls: "as-start-btn" });
+        restartBtn.addEventListener("click", () => {
+          const ids = ["app:restart", "app:reload"];
+          for (const id of ids) {
+            try {
+              const cmd = this.app.commands?.findCommand?.(id);
+              if (cmd) {
+                this.plugin.syncEngine.clearObsidianFilesChanged();
+                this.app.commands.executeCommandById(id);
+                return;
+              }
+            } catch {
+              // ignore
+            }
+          }
+          new Notice("Advanced Sync: Please restart Obsidian manually to apply .obsidian changes.");
+        });
+      }
     } else {
-      // Show live activity
-      const rendererContainer = body.createDiv("as-apply-activity");
-      const renderer = new SyncActivityRenderer(rendererContainer, {
-        getActiveItems: () => this.plugin.syncEngine.activeItems,
-        getHistory: () => [],
-        getState: () => this.plugin.syncEngine.state,
+      // During initial sync, the per-file lists can be overwhelming (especially on mobile).
+      // Show only a lightweight progress indicator here.
+      const wrap = body.createDiv("as-apply-activity");
+
+      const info = wrap.createDiv();
+      info.createEl("p", {
+        text: "Syncing… Keep this tab open until it finishes.",
+        cls: "as-wizard-desc",
       });
-      renderer.render();
+
+      const progressEl = wrap.createDiv("as-history-view-progress");
+      const progressInner = progressEl.createDiv("as-history-view-progress-inner");
+      const progressFill = progressInner.createDiv("as-history-view-progress-bar");
+      const progressText = progressEl.createDiv("as-history-view-progress-text");
+      progressEl.style.display = "none";
+
+      const setProgress = (current: number, total: number, detail: string) => {
+        if (total === 0 || current >= total) {
+          progressEl.style.display = "none";
+          progressFill.style.width = "0%";
+          progressText.textContent = "";
+          return;
+        }
+        progressEl.style.display = "block";
+        const pct = Math.round((current / total) * 100);
+        progressFill.style.width = `${pct}%`;
+        const remaining = total - current;
+        progressText.textContent = remaining > 0
+          ? `${remaining} file${remaining !== 1 ? "s" : ""} remaining — ${detail}`
+          : detail;
+      };
 
       // Wire up updates
-      this.notifyActivityChanged = () => renderer.refreshActive();
-      this.notifyProgressChanged = (current, total, detail) => renderer.setProgress(current, total, detail);
+      this.notifyActivityChanged = () => {};
+      this.notifyProgressChanged = (current, total, detail) => setProgress(current, total, detail);
       this.notifyDataChanged = () => {
         if (this.plugin.syncEngine.state === "idle") {
-          this.display(); // Re-render when done
+          this.display();
         }
       };
     }

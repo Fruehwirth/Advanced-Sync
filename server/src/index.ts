@@ -174,10 +174,19 @@ app.post("/api/log/clear", requireAuth, (_req, res) => {
 });
 
 app.post("/api/reset", requireAuth, (_req, res) => {
-  storage.reset();
+  // Full wipe: this removes all files, salts, tokens, sessions, logs, password,
+  // TLS certs, and server-id.
+  wsServer?.beginReset();
+  const newServerId = storage.wipeAll();
+  auth.reload(storage);
   currentTheme = {};
-  console.log("[Server] Storage reset via web UI.");
-  res.json({ ok: true });
+  // Update server id for WS AUTH_OK + discovery broadcasts.
+  config.serverId = newServerId;
+  discovery.stop();
+  discovery.start();
+  wsServer?.endReset();
+  console.log("[Server] Full reset performed via web UI.");
+  res.json({ ok: true, initialized: auth.isInitialized() });
 });
 
 // Create HTTP/HTTPS server
