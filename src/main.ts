@@ -135,7 +135,7 @@ export default class AdvancedSyncPlugin extends Plugin {
 
   onunload(): void {
     this.popup?.close();
-    this.syncEngine?.disconnect();
+    this.syncEngine?.destroy();
     this.statusBar?.destroy();
     this.app.workspace.detachLeavesOfType(SYNC_HISTORY_VIEW_TYPE);
   }

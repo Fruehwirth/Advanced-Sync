@@ -192,7 +192,7 @@ export class SyncEngine {
     this.fileWatcher.start();
   }
 
-  /** Disconnect and stop watching. */
+  /** Disconnect from the server. File watcher stays active to queue offline changes. */
   disconnect(): void {
     this.readyForIncrementalSync = false;
     this.pendingInitialDownloads = 0;
@@ -206,21 +206,26 @@ export class SyncEngine {
     this.activityChangePending = false;
     this.bulkHistoryPending = false;
     this._state = "disconnected";
-    this.fileWatcher.stop();
+    // Keep fileWatcher running so offline changes are queued
     this.connection.disconnect();
-    this.vaultKey = null;
     this.localManifest.clear();
     this.pendingDownloads.clear();
     this.activeItems.length = 0;
     this.obsidianFilesChanged = false;
-    // Clear offline queue and remove pending history entries
+    // Keep pendingLocalChanges and pending history entries — they'll be flushed on reconnect
+    delete (this as any)._tempPassword;
+  }
+
+  /** Full cleanup — stops file watcher, clears all state. Call on plugin unload. */
+  destroy(): void {
+    this.fileWatcher.stop();
+    this.vaultKey = null;
     this.pendingLocalChanges = [];
-    const hadPending = this.history.some(e => e.pending);
+    // Remove pending history entries
     for (let i = this.history.length - 1; i >= 0; i--) {
       if (this.history[i].pending) this.history.splice(i, 1);
     }
-    if (hadPending) this.onHistoryChange();
-    delete (this as any)._tempPassword;
+    this.disconnect();
   }
 
   /** Whether any .obsidian/ files have changed during sync. */
@@ -432,6 +437,8 @@ export class SyncEngine {
         if (this.readyForIncrementalSync) {
           this.recordHistory("Server", "disconnect");
         }
+        // Mark not ready so changes are queued until next sync completes
+        this.readyForIncrementalSync = false;
       } else if (state === "error" && error) {
         this.recordHistory(error, "error");
         // Handle session revoked
@@ -1105,12 +1112,14 @@ export class SyncEngine {
 
   /** Handle a local file change (from file watcher). */
   private async handleLocalChange(change: FileChange): Promise<void> {
-    if (!this.vaultKey) return;
-
-    // If not ready for incremental sync, queue the change for later
-    if (!this.connection.isConnected || !this.readyForIncrementalSync) {
+    // Queue changes when disconnected, not ready, or no key yet (encrypt on flush)
+    if (!this.vaultKey || !this.connection.isConnected || !this.readyForIncrementalSync) {
       // Deduplicate by path — keep the latest change per path
       this.pendingLocalChanges = this.pendingLocalChanges.filter(c => c.path !== change.path);
+      // For renames, also remove any pending change for the old path
+      if (change.type === "rename" && change.oldPath) {
+        this.pendingLocalChanges = this.pendingLocalChanges.filter(c => c.path !== change.oldPath);
+      }
       this.pendingLocalChanges.push(change);
       // Record pending history entry
       const dir = change.type === "delete" ? "delete" : change.type === "create" ? "create" : "upload";
@@ -1147,13 +1156,22 @@ export class SyncEngine {
     if (this.pendingLocalChanges.length === 0) return;
     const changes = [...this.pendingLocalChanges];
     this.pendingLocalChanges = [];
-    // Clear pending flags on history entries for these paths
-    for (const entry of this.history) {
-      if (entry.pending) entry.pending = false;
+    // Remove pending history entries — executeLocalChange will create fresh ones
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].pending) this.history.splice(i, 1);
     }
     this.onHistoryChange();
-    for (const change of changes) {
-      await this.executeLocalChange(change);
+    for (let i = 0; i < changes.length; i++) {
+      // If connection dropped during flush, re-queue remaining changes
+      if (!this.connection.isConnected || !this.readyForIncrementalSync) {
+        for (let j = i; j < changes.length; j++) {
+          this.pendingLocalChanges.push(changes[j]);
+          const dir = changes[j].type === "delete" ? "delete" : changes[j].type === "create" ? "create" : "upload";
+          this.recordHistory(changes[j].path, dir, true);
+        }
+        return;
+      }
+      await this.executeLocalChange(changes[i]);
     }
   }
 

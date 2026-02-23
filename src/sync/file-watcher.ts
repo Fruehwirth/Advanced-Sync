@@ -29,6 +29,8 @@ export class FileWatcher {
   /** True after the first adapter poll completes — guards against emitting
    *  spurious "create" events on startup for files that already existed. */
   private adapterPollHasRun = false;
+  /** Guard against double event registration. */
+  private running = false;
 
   constructor(
     vault: Vault,
@@ -41,6 +43,8 @@ export class FileWatcher {
   }
 
   start(): void {
+    if (this.running) return;
+    this.running = true;
     this.eventRefs.push(
       this.vault.on("modify", (file) => {
         this.handleEvent("modify", file);
@@ -70,6 +74,7 @@ export class FileWatcher {
   }
 
   stop(): void {
+    this.running = false;
     for (const ref of this.eventRefs) {
       this.vault.offref(ref);
     }

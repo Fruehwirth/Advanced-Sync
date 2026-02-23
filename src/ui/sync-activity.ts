@@ -286,7 +286,7 @@ export class SyncActivityRenderer {
       }
 
       if (entry.pending) {
-        row.createSpan({ text: "waiting", cls: "as-history-view-time as-history-view-time-pending" });
+        row.createSpan({ text: "pending", cls: "as-history-view-time as-history-view-time-pending" });
       } else {
         row.createSpan({ text: formatTimeAgo(entry.timestamp), cls: "as-history-view-time" });
       }

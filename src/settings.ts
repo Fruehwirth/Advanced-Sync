@@ -1124,7 +1124,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
             this.app,
             "All sync settings and credentials will be deleted. Your vault files are not affected.",
             async () => {
-              this.plugin.syncEngine.disconnect();
+              this.plugin.syncEngine.destroy();
               try {
                 const dataPath = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}/data.json`;
                 await this.plugin.app.vault.adapter.remove(dataPath);
