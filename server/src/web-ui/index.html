@@ -108,16 +108,22 @@
         </svg>
         <span>Advanced Sync</span>
       </div>
-      <h1 class="login-title">Dashboard</h1>
-      <p class="login-desc">Enter the server password to continue.</p>
-      <form id="login-form" autocomplete="on">
-        <div class="login-field">
-          <label for="login-password">Password</label>
-          <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="Server password">
-        </div>
-        <div id="login-error" class="login-error hidden"></div>
-        <button type="submit" class="btn btn-primary" id="login-submit">Sign In</button>
-      </form>
+      <div id="init-panel" class="hidden">
+        <h1 class="login-title">Server Setup</h1>
+        <p class="login-desc">This server has not been initialized yet. Complete setup from the Advanced Sync plugin to set the server password, then refresh this page.</p>
+      </div>
+      <div id="login-panel">
+        <h1 class="login-title">Dashboard</h1>
+        <p class="login-desc">Enter the server password to continue.</p>
+        <form id="login-form" autocomplete="on">
+          <div class="login-field">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="Server password">
+          </div>
+          <div id="login-error" class="login-error hidden"></div>
+          <button type="submit" class="btn btn-primary" id="login-submit">Sign In</button>
+        </form>
+      </div>
     </div>
   </div>
 

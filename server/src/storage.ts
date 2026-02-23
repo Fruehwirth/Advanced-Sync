@@ -73,6 +73,23 @@ export class Storage {
     this.db.prepare("INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('vault_salt', ?)").run(salt);
   }
 
+  // ---- Server initialization (password) ----
+
+  getServerPasswordHash(): string | null {
+    const row = this.db
+      .prepare("SELECT value FROM vault_meta WHERE key = 'server_password_hash'")
+      .get() as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setServerPasswordHash(passwordHash: string): void {
+    this.db
+      .prepare(
+        "INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('server_password_hash', ?)"
+      )
+      .run(passwordHash);
+  }
+
   getCurrentSequence(): number {
     const row = this.db.prepare("SELECT MAX(sequence) as seq FROM files").get() as { seq: number | null };
     return row?.seq ?? 0;
@@ -91,13 +108,23 @@ export class Storage {
     return rows.map((r) => ({ fileId: r.file_id, encryptedMeta: r.encrypted_meta, mtime: r.mtime, size: r.size, deleted: r.deleted === 1, sequence: r.sequence }));
   }
 
-  putFile(fileId: string, encryptedMeta: string, mtime: number, size: number, blobData: Buffer): number {
+  putFile(
+    fileId: string,
+    encryptedMeta: string,
+    mtime: number,
+    size: number,
+    blobData: Buffer
+  ): { sequence: number; isNew: boolean } {
+    const existing = this.db
+      .prepare("SELECT deleted FROM files WHERE file_id = ?")
+      .get(fileId) as { deleted: number } | undefined;
+    const isNew = !existing || existing.deleted === 1;
     const nextSeq = this.getCurrentSequence() + 1;
     this.db.prepare("INSERT OR REPLACE INTO files (file_id, encrypted_meta, mtime, size, deleted, sequence) VALUES (?, ?, ?, ?, 0, ?)").run(fileId, encryptedMeta, mtime, size, nextSeq);
     const blobPath = this.getBlobPath(fileId);
     fs.mkdirSync(path.dirname(blobPath), { recursive: true });
     fs.writeFileSync(blobPath, blobData);
-    return nextSeq;
+    return { sequence: nextSeq, isNew };
   }
 
   getFile(fileId: string): Buffer | null {
@@ -191,7 +218,8 @@ export class Storage {
 
   reset(): void {
     this.db.exec("DELETE FROM files");
-    this.db.exec("DELETE FROM vault_meta");
+    // Keep server password hash so reset doesn't lock you out.
+    this.db.exec("DELETE FROM vault_meta WHERE key != 'server_password_hash'");
     this.db.exec("DELETE FROM client_sessions");
     this.db.exec("DELETE FROM activity_log");
     this.db.exec("DELETE FROM auth_tokens");

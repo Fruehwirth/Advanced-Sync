@@ -99,7 +99,11 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   private wSyncAllFileTypes = true;
   private wErrorMsg = "";
   private serverReachable = false;
+  private serverInitialized: boolean | null = null;
   private pingDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Server initialization wizard state
+  private wPasswordConfirm = "";
 
   // Sync preview state
   private previewPlan: import("./sync/sync-engine").SyncPlan | null = null;
@@ -118,6 +122,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.wStep = 0;
     this.wServerUrl = s.serverUrl || "";
     this.wPassword = "";
+    this.wPasswordConfirm = "";
     this.wDeviceName = s.deviceName || getHostname();
     this.wStrategy = "merge";
     this.wSyncPlugins = s.syncPlugins;
@@ -126,6 +131,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.wSyncAllFileTypes = s.syncAllFileTypes ?? true;
     this.wErrorMsg = "";
     this.serverReachable = false;
+    this.serverInitialized = null;
     this.wPasswordValid = null;
     this.previewPlan = null;
     this.previewError = "";
@@ -161,21 +167,51 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   // ================================================================
 
   private renderWizard(container: HTMLElement): void {
-    const stepNames = ["Welcome", "Server", "Password", "Device", "Sync", "Summary", "Preview", "Apply"];
+    const stepNames = [
+      "Welcome",
+      "Server",
+      this.serverInitialized === false ? "Set Password" : "Password",
+      "Device",
+      "Sync",
+      "Summary",
+      "Preview",
+      "Apply",
+    ];
     const stepIcons = ["refresh-cw", "server", "lock", "monitor", "sliders", "list", "eye", "check-circle"];
 
     // Step indicator (dots + labels)
     const indicator = container.createDiv("as-wizard-indicator");
     for (let i = 0; i < TOTAL_STEPS; i++) {
       const stepEl = indicator.createDiv("as-wizard-step-container");
-      const dot = stepEl.createSpan("as-wizard-dot");
-      if (i === this.wStep) dot.addClass("active");
-      if (i < this.wStep) dot.addClass("completed");
+      const iconWrap = stepEl.createSpan("as-wizard-step-icon");
+      setIcon(iconWrap, stepIcons[i]);
+      if (i === this.wStep) iconWrap.addClass("active");
+      if (i < this.wStep) iconWrap.addClass("completed");
       stepEl.createDiv({ text: stepNames[i], cls: "as-wizard-step-label" });
     }
 
     // Card with in-card navigation row at the top
     const card = container.createDiv("as-wizard-card");
+
+    // Keyboard navigation: Enter advances wizard on most steps.
+    // (Avoids requiring precise taps on mobile.)
+    card.addEventListener(
+      "keydown",
+      (ev: KeyboardEvent) => {
+        if (ev.key !== "Enter" || ev.shiftKey || (ev as any).isComposing) return;
+        const t = ev.target as any;
+        if (t instanceof HTMLTextAreaElement) return;
+
+        if (this.wStep >= 0 && this.wStep <= 4) {
+          ev.preventDefault();
+          void this.wNext();
+        } else if (this.wStep === 5) {
+          ev.preventDefault();
+          void this.wConnect();
+        }
+      },
+      true
+    );
 
     const cardNav = card.createDiv("as-wizard-card-nav");
 
@@ -190,7 +226,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
     // Step name + icon as big header (centre)
     const titleEl = cardNav.createDiv("as-wizard-step-title-inline");
-    setIcon(titleEl.createSpan("as-wizard-step-title-icon"), stepIcons[this.wStep]);
     titleEl.createSpan({ text: stepNames[this.wStep] });
 
     // Next arrow (right) — steps 0-4 only
@@ -218,7 +253,6 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
   private wRenderWelcome(body: HTMLElement): void {
     const title = body.createDiv("as-wizard-title");
-    setIcon(title.createSpan("as-wizard-icon"), "refresh-cw");
     title.createSpan({ text: "Advanced Sync Setup" });
     body.createEl("p", {
       text: "This wizard will set up encrypted vault synchronization across your devices.",
@@ -310,6 +344,8 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     portInput.value = initialPort;
 
     const urlLabel = row.createDiv("as-url-label");
+    const initLabel = row.createDiv("as-init-label");
+    initLabel.style.display = "none";
 
     const updateNextBtn = () => {
       const nextBtn = this.containerEl.querySelector(".as-wizard-next-btn") as HTMLButtonElement | null;
@@ -340,7 +376,9 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       if (!h) {
         this.wServerUrl = "";
         urlLabel.style.display = "none";
+        initLabel.style.display = "none";
         this.serverReachable = false;
+        this.serverInitialized = null;
         updateStatusIcon("none");
         updateNextBtn();
         return;
@@ -353,11 +391,39 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       try {
         const res = await fetch(`${httpUrl}/health`, { signal: AbortSignal.timeout(5000) });
         this.serverReachable = res.ok;
-        updateStatusIcon(res.ok ? "ok" : "fail");
+        if (res.ok) {
+          try {
+            const json = (await res.json()) as { initialized?: boolean };
+            this.serverInitialized = typeof json.initialized === "boolean" ? json.initialized : null;
+          } catch {
+            this.serverInitialized = null;
+          }
+        } else {
+          this.serverInitialized = null;
+        }
+        updateStatusIcon(this.serverReachable ? "ok" : "fail");
       } catch {
         this.serverReachable = false;
+        this.serverInitialized = null;
         updateStatusIcon("fail");
       }
+
+      if (this.serverReachable && this.serverInitialized === false) {
+        initLabel.textContent = "Server not initialized — you'll set a password next.";
+        initLabel.style.display = "block";
+      } else if (this.serverReachable && this.serverInitialized === true) {
+        initLabel.textContent = "Server initialized.";
+        initLabel.style.display = "block";
+      } else {
+        initLabel.style.display = "none";
+      }
+
+      // Keep the indicator label in sync without a full re-render.
+      const stepLabels = this.containerEl.querySelectorAll(".as-wizard-step-label");
+      if (stepLabels.length >= 3) {
+        (stepLabels[2] as HTMLElement).textContent = this.serverInitialized === false ? "Set Password" : "Password";
+      }
+
       updateNextBtn();
     };
 
@@ -373,6 +439,8 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         urlLabel.style.display = "none";
       }
       this.serverReachable = false;
+      this.serverInitialized = null;
+      initLabel.style.display = "none";
       updateNextBtn();
       if (this.pingDebounceTimer) clearTimeout(this.pingDebounceTimer);
       if (h) {
@@ -400,7 +468,9 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
   private wRenderPassword(body: HTMLElement): void {
     const callout = body.createDiv("as-wizard-callout");
-    callout.textContent = "This password authenticates you with the server and encrypts your vault data. Keep it safe — if you lose it, your data cannot be recovered.";
+    callout.textContent = this.serverInitialized === false
+      ? "This server has not been initialized yet. Set a server password now. This password will also encrypt your vault data. Keep it safe — if you lose it, your data cannot be recovered."
+      : "This password authenticates you with the server and encrypts your vault data. Keep it safe — if you lose it, your data cannot be recovered.";
 
     if (this.wErrorMsg) {
       body.createDiv({ text: this.wErrorMsg, cls: "as-error", attr: { style: "display:block; margin-bottom:8px;" } });
@@ -408,7 +478,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
     const g = body.createDiv("as-field-group");
     const labelRow = g.createDiv("as-field-label-row");
-    labelRow.createEl("label", { text: "Password", cls: "as-field-label" });
+    labelRow.createEl("label", { text: this.serverInitialized === false ? "Set Password" : "Password", cls: "as-field-label" });
     const pwStatus = labelRow.createSpan("as-server-status-inline");
 
     const wrapper = g.createDiv("as-password-wrapper");
@@ -423,11 +493,13 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       toggle.empty(); setIcon(toggle, hidden ? "eye-off" : "eye");
     });
 
-    // Instant password validation against the server
+    // Instant password validation against the server (only when initialized)
     let pwValidateTimer: ReturnType<typeof setTimeout> | null = null;
     const validatePw = async () => {
       const password = input.value;
       if (!password || !this.wServerUrl) { pwStatus.empty(); return; }
+      if (this.serverInitialized === false) return;
+
       pwStatus.empty();
       const pinging = pwStatus.createSpan("as-status-pinging");
       setIcon(pinging, "loader");
@@ -452,6 +524,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         this.wPasswordValid = null;
         pwStatus.empty();
       }
+
       // Reflect on next button
       const nextBtn = this.containerEl.querySelector(".as-wizard-next-btn") as HTMLButtonElement | null;
       if (nextBtn) {
@@ -461,12 +534,57 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       }
     };
 
+    // Confirm password UI when server is not initialized
+    let confirmInput: HTMLInputElement | null = null;
+    let updateInitMatch: (() => void) | null = null;
+    if (this.serverInitialized === false) {
+      const g2 = body.createDiv("as-field-group");
+      g2.createEl("label", { text: "Confirm Password", cls: "as-field-label" });
+      const w2 = g2.createDiv("as-password-wrapper");
+      confirmInput = w2.createEl("input", { type: "password", placeholder: "Repeat password", cls: "as-input as-password-input" });
+      confirmInput.value = this.wPasswordConfirm;
+      const t2 = w2.createDiv("as-eye-toggle");
+      setIcon(t2, "eye");
+      t2.addEventListener("click", () => {
+        const hidden = confirmInput!.type === "password";
+        confirmInput!.type = hidden ? "text" : "password";
+        t2.empty(); setIcon(t2, hidden ? "eye-off" : "eye");
+      });
+
+      updateInitMatch = () => {
+        pwStatus.empty();
+        this.wPasswordValid = null;
+        if (!this.wPassword || !this.wPasswordConfirm) return;
+        if (this.wPassword === this.wPasswordConfirm) {
+          this.wPasswordValid = true;
+          const ok = pwStatus.createSpan("as-status-ok");
+          setIcon(ok, "check");
+        } else {
+          this.wPasswordValid = false;
+          const fail = pwStatus.createSpan("as-status-fail");
+          setIcon(fail, "x");
+        }
+      };
+
+      confirmInput.addEventListener("input", () => {
+        this.wPasswordConfirm = confirmInput!.value;
+        updateInitMatch?.();
+      });
+
+      // Re-render indicator on first open
+      setTimeout(() => updateInitMatch?.(), 0);
+    }
+
     input.addEventListener("input", () => {
       this.wPassword = input.value;
       this.wPasswordValid = null;
       pwStatus.empty();
       if (pwValidateTimer) clearTimeout(pwValidateTimer);
-      if (input.value) pwValidateTimer = setTimeout(validatePw, 600);
+      if (this.serverInitialized === false) {
+        updateInitMatch?.();
+      } else if (input.value) {
+        pwValidateTimer = setTimeout(validatePw, 600);
+      }
     });
 
     // Restore previous validation state visually
@@ -474,7 +592,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       const ok = pwStatus.createSpan("as-status-ok"); setIcon(ok, "check");
     } else if (this.wPasswordValid === false) {
       const fail = pwStatus.createSpan("as-status-fail"); setIcon(fail, "x");
-    } else if (this.wPassword) {
+    } else if (this.wPassword && this.serverInitialized !== false) {
       setTimeout(validatePw, 100);
     }
 
@@ -723,6 +841,10 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         break;
       case 2:
         if (!this.wPassword) { this.wErrorMsg = "Password cannot be empty."; this.display(); return; }
+        if (this.serverInitialized === false) {
+          if (!this.wPasswordConfirm) { this.wErrorMsg = "Please confirm your password."; this.display(); return; }
+          if (this.wPassword !== this.wPasswordConfirm) { this.wErrorMsg = "Passwords do not match."; this.display(); return; }
+        }
         break;
       case 3:
         if (!this.wDeviceName) return;
@@ -754,6 +876,28 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.display();
 
     try {
+      // Initialize the server password if needed
+      if (this.serverInitialized === false) {
+        const hash = await sha256String(this.wPassword);
+        const res = await fetch(`${toHttpUrl(this.wServerUrl)}/api/init`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passwordHash: hash }),
+          signal: AbortSignal.timeout(8000),
+        });
+
+        if (res.status === 409) {
+          // Another device likely initialized it first.
+          // Switch to normal password mode.
+          this.serverInitialized = true;
+        } else if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          throw new Error(txt || "Failed to initialize server");
+        } else {
+          this.serverInitialized = true;
+        }
+      }
+
       // Connect with password
       await this.plugin.connectWithPassword(this.wPassword);
 

@@ -7,6 +7,8 @@ var authHash=null, ws=null, reconnectTimer=null, onlineClients=[], logInit=false
 
 // ---- DOM refs ----
 var loginOverlay=document.getElementById("login-overlay");
+var initPanel=document.getElementById("init-panel");
+var loginPanel=document.getElementById("login-panel");
 var loginForm=document.getElementById("login-form");
 var loginPasswordInput=document.getElementById("login-password");
 var loginErrorEl=document.getElementById("login-error");
@@ -57,6 +59,8 @@ function apiFetch(url, options) {
 
 // ---- Login screen ----
 function showLogin(errorMsg) {
+  if(initPanel) initPanel.classList.add("hidden");
+  if(loginPanel) loginPanel.classList.remove("hidden");
   loginOverlay.classList.remove("hidden");
   loginPasswordInput.value="";
   loginSubmitBtn.disabled=false;
@@ -68,6 +72,16 @@ function showLogin(errorMsg) {
     loginErrorEl.classList.add("hidden");
   }
   setTimeout(function(){loginPasswordInput.focus();},50);
+}
+
+function showInit() {
+  if(loginPanel) loginPanel.classList.add("hidden");
+  if(initPanel) initPanel.classList.remove("hidden");
+  loginOverlay.classList.remove("hidden");
+}
+
+function fetchInitStatus() {
+  return fetch("/api/init-status").then(function(r){return r.json();}).catch(function(){return {initialized:true};});
 }
 
 loginForm.addEventListener("submit", function(e) {
@@ -87,6 +101,7 @@ loginForm.addEventListener("submit", function(e) {
       body:JSON.stringify({passwordHash:hash})
     });
   }).then(function(res) {
+    if(res.status===428) throw new Error("Server not initialized. Finish setup in the plugin first.");
     if(!res.ok) return res.json().then(function(d){throw new Error(d.error||"Invalid password");});
     return res.json();
   }).then(function() {
@@ -213,7 +228,7 @@ function handleEvent(event,data){
       if(document.getElementById("tab-devices").classList.contains("active")) loadOfflineClients();
       break;
     case"file_changed":
-      addEntry("upload",(data.deviceName||"Device")+" synced "+data.fileId.substring(0,8)+"... ("+fmtSize(data.size)+")");
+      addEntry(data.isNew?"create":"upload",(data.deviceName||"Device")+" synced "+data.fileId.substring(0,8)+"... ("+fmtSize(data.size)+")");
       refreshStats();
       break;
     case"file_removed":
@@ -295,6 +310,10 @@ function kickClient(clientId,el,online){
   var btn=el.querySelector(".client-kick-btn");
   if(btn){btn.disabled=true;btn.textContent="\u2026";}
   apiFetch("/api/sessions/"+encodeURIComponent(clientId)+"/revoke",{method:"POST"})
+    .then(function(res){
+      if(!res.ok) return res.json().then(function(d){throw new Error(d.error||"Revoke failed");});
+      return res.json();
+    })
     .then(function(){
       el.style.opacity="0";
       el.style.transition="opacity 0.2s";
@@ -380,12 +399,26 @@ function fmtTimeAgo(ts){
 function esc(str){var d=document.createElement("div");d.textContent=str||"";return d.innerHTML;}
 
 // ---- Boot ----
-authHash=sessionStorage.getItem(AUTH_KEY);
-if(authHash){
-  loginOverlay.classList.add("hidden");
-  initDashboard();
-} else {
-  showLogin();
-}
+fetchInitStatus().then(function(s){
+  if(!s || !s.initialized){
+    showInit();
+    setInterval(function(){
+      fetchInitStatus().then(function(s2){
+        if(s2 && s2.initialized){
+          showLogin();
+        }
+      });
+    }, 2000);
+    return;
+  }
+
+  authHash=sessionStorage.getItem(AUTH_KEY);
+  if(authHash){
+    loginOverlay.classList.add("hidden");
+    initDashboard();
+  } else {
+    showLogin();
+  }
+});
 
 })();

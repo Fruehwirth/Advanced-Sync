@@ -17,7 +17,6 @@ function loadConfig() {
         port: parseInt(getEnv("PORT", "8443"), 10),
         discoveryPort: parseInt(getEnv("DISCOVERY_PORT", "21547"), 10),
         dataDir,
-        serverPassword: getEnv("SERVER_PASSWORD", "changeme"),
         hostname: getEnv("HOSTNAME", require("os").hostname()),
         serverId: getEnv("SERVER_ID", generateServerId(dataDir)),
     };

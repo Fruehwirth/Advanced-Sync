@@ -28,7 +28,6 @@ docker run -d \
   -p 8443:8443 \
   -p 21547:21547/udp \
   -v ./data:/data \
-  -e SERVER_PASSWORD=your-password \
   --user 1000:1000 \
   --restart unless-stopped \
   fruehwirth/advanced-sync:latest
@@ -45,8 +44,6 @@ services:
       - "21547:21547/udp"  # LAN auto-discovery
     volumes:
       - ./data:/data
-    environment:
-      - SERVER_PASSWORD=your-password
     user: "1000:1000"
     restart: unless-stopped
 ```
@@ -57,7 +54,10 @@ docker compose up -d
 
 The server exposes a web dashboard at `http://<host>:8443` where you can monitor connected devices, view the change log, and manage sessions.
 
-> **Note:** Change `SERVER_PASSWORD` to a strong password before deploying. This is the same password you will enter in the Obsidian plugin wizard.
+On first start, the server is uninitialized. Complete setup from the Advanced Sync plugin — the setup wizard will detect this and guide you through setting the server password (enter it twice). This password is also used to log into the web dashboard.
+
+> **Note:** The dashboard login hashes the password in your browser. For non-local access, enable TLS (`USE_TLS=true`) or open the dashboard via `http://localhost:8443`.
+
 
 ---
 
@@ -80,12 +80,12 @@ Search for **Advanced Sync** in **Settings → Community plugins**.
 1. Start the server (see above)
 2. Open **Settings → Advanced Sync** in Obsidian
 3. Follow the setup wizard:
-   - **Server** — enter your server's IP/hostname and port (or select it from the auto-discovered list)
-   - **Password** — enter the `SERVER_PASSWORD` you set on the server. An inline check confirms the password is correct as you type.
-   - **Device** — give this device a name
-   - **Sync** — choose what to sync and how to handle the initial merge
-   - **Preview** — review exactly which files will be downloaded, uploaded, or deleted before anything happens
-   - **Apply** — watch live progress as the first sync completes
+    - **Server** — enter your server's IP/hostname and port (or select it from the auto-discovered list)
+    - **Password** — enter the server password. If the server is not initialized yet, the wizard will ask you to set it (enter twice). An inline check confirms the password is correct as you type.
+    - **Device** — give this device a name
+    - **Sync** — choose what to sync and how to handle the initial merge
+    - **Preview** — review exactly which files will be downloaded, uploaded, or deleted before anything happens
+    - **Apply** — watch live progress as the first sync completes
 4. Done. Obsidian will auto-connect on every restart from now on.
 
 ---
@@ -103,7 +103,7 @@ Search for **Advanced Sync** in **Settings → Community plugins**.
 
 | Layer | Mechanism |
 |---|---|
-| Authentication | Password hashed with SHA-256, sent on WebSocket connect. Stored as an opaque session token after first login. |
+| Authentication | Server stores only a SHA-256 password hash. Clients send SHA-256(password) on WebSocket connect, then use an opaque session token for reconnect. |
 | Key derivation | Password + server-provided salt → PBKDF2 (210,000 iterations, SHA-512) → AES-256-GCM vault key |
 | File encryption | Each file encrypted with AES-256-GCM with a random 12-byte IV. Sent as raw binary — no base64 overhead. |
 | Metadata encryption | File paths encrypted separately so the server cannot infer vault structure from filenames. |

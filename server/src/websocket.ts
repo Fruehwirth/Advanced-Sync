@@ -102,6 +102,10 @@ export class SyncWebSocketServer {
   }
 
   private handleUIConnection(ws: WebSocket, req: IncomingMessage): void {
+    if (!this.auth.isInitialized()) {
+      ws.close(4401, "Server not initialized");
+      return;
+    }
     // Validate dashboard auth token from query string
     const url = new URL(req.url ?? "/", "http://base");
     const token = url.searchParams.get("auth") ?? "";
@@ -224,13 +228,14 @@ export class SyncWebSocketServer {
     const upload = client.pendingUpload;
     client.pendingUpload = null;
 
-    const sequence = this.storage.putFile(
+    const put = this.storage.putFile(
       upload.fileId,
       upload.encryptedMeta,
       upload.mtime,
       upload.size,
       data
     );
+    const sequence = put.sequence;
 
     // ACK to uploader
     this.send(client.ws, {
@@ -259,8 +264,9 @@ export class SyncWebSocketServer {
     }
 
     // Log and broadcast to UI
+    const logType = put.isNew ? "create" : "upload";
     this.storage.appendLog(
-      "upload",
+      logType,
       `${client.deviceName} synced ${upload.fileId.substring(0, 8)}... (${fmtSize(upload.size)})`,
       Date.now()
     );
@@ -269,6 +275,7 @@ export class SyncWebSocketServer {
       size: upload.size,
       clientId: client.clientId,
       deviceName: client.deviceName,
+      isNew: put.isNew,
       timestamp: Date.now(),
     });
 
@@ -278,6 +285,15 @@ export class SyncWebSocketServer {
   }
 
   private handleAuth(client: ConnectedClient, msg: AuthMessage): void {
+    if (!this.auth.isInitialized()) {
+      this.send(client.ws, {
+        type: MessageType.AUTH_FAIL,
+        reason: "Server not initialized",
+      });
+      client.ws.close(4401, "Server not initialized");
+      return;
+    }
+
     // Check protocol version
     if (msg.protocolVersion !== PROTOCOL_VERSION) {
       this.send(client.ws, {
@@ -375,6 +391,8 @@ export class SyncWebSocketServer {
       if (client.clientId === targetClientId && client.authenticated) {
         // Revoke their token
         this.auth.revokeToken(targetClientId, this.storage);
+        // Remove from device history
+        this.storage.deleteClientSession(targetClientId);
         // Close their connection
         this.send(ws, {
           type: MessageType.AUTH_FAIL,
@@ -387,11 +405,13 @@ export class SyncWebSocketServer {
 
     // Also revoke token for offline clients
     this.auth.revokeToken(targetClientId, this.storage);
+    this.storage.deleteClientSession(targetClientId);
 
     this.storage.appendLog("kick", `${sender.deviceName} kicked ${targetClientId}`, Date.now());
     console.log(`[WS] Client ${targetClientId} kicked by ${sender.deviceName}`);
 
-    // Client list will be updated when the kicked client's close handler fires
+    // Ensure all clients see the updated list, even if target was offline.
+    this.broadcastClientList();
   }
 
   /** Push CLIENT_LIST to all authenticated sync clients. */
@@ -563,16 +583,20 @@ export class SyncWebSocketServer {
     for (const [ws, client] of this.clients) {
       if (client.clientId === clientId && client.authenticated) {
         this.auth.revokeToken(clientId, this.storage);
+        this.storage.deleteClientSession(clientId);
         this.send(ws, {
           type: MessageType.AUTH_FAIL,
           reason: "Session revoked",
         });
         ws.close(4005, "Session revoked");
+        this.broadcastClientList();
         return true;
       }
     }
     // Also revoke token for offline clients
     this.auth.revokeToken(clientId, this.storage);
+    this.storage.deleteClientSession(clientId);
+    this.broadcastClientList();
     return false;
   }
 

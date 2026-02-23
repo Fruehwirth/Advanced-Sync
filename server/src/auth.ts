@@ -3,7 +3,6 @@
  */
 
 import crypto from "crypto";
-import type { ServerConfig } from "./config";
 import type { Storage } from "./storage";
 
 interface RateLimitEntry {
@@ -15,15 +14,34 @@ const MAX_FAILURES = 5;
 const WINDOW_MS = 60_000; // 1 minute
 
 export class Auth {
-  private passwordHash: string;
+  private passwordHash: string | null;
   private rateLimits: Map<string, RateLimitEntry> = new Map();
 
-  constructor(config: ServerConfig) {
-    // Pre-compute SHA-256 hash of the server password for comparison
-    this.passwordHash = crypto
-      .createHash("sha256")
-      .update(config.serverPassword)
-      .digest("hex");
+  constructor(storage: Storage) {
+    const persisted = storage.getServerPasswordHash();
+    this.passwordHash = persisted;
+  }
+
+  isInitialized(): boolean {
+    return !!this.passwordHash;
+  }
+
+  /** One-time initialization. Stores the password hash and enables auth. */
+  initialize(passwordHash: string, storage: Storage): { ok: boolean; reason?: string } {
+    if (this.passwordHash) {
+      return { ok: false, reason: "Already initialized" };
+    }
+    if (!Auth.isValidHexSha256(passwordHash)) {
+      return { ok: false, reason: "Invalid passwordHash" };
+    }
+    storage.setServerPasswordHash(passwordHash);
+    this.passwordHash = passwordHash;
+    this.rateLimits.clear();
+    return { ok: true };
+  }
+
+  private static isValidHexSha256(hash: string): boolean {
+    return /^[a-f0-9]{64}$/i.test(hash);
   }
 
   /**
@@ -33,6 +51,10 @@ export class Auth {
    * @returns true if authenticated, false if wrong password or rate limited
    */
   verify(clientHash: string, ip: string): { ok: boolean; reason?: string } {
+    if (!this.passwordHash) {
+      return { ok: false, reason: "Server not initialized" };
+    }
+
     // Check rate limit
     const limit = this.rateLimits.get(ip);
     if (limit) {
@@ -67,6 +89,7 @@ export class Auth {
    */
   checkHash(hash: string): boolean {
     try {
+      if (!this.passwordHash) return false;
       const expected = Buffer.from(this.passwordHash, "hex");
       const provided = Buffer.from(hash, "hex");
       if (expected.length !== provided.length) return false;

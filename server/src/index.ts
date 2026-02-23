@@ -27,7 +27,12 @@ console.log(`[Server] Discovery port: ${config.discoveryPort}`);
 const storage = new Storage(config);
 console.log("[Server] Storage initialized.");
 
-const auth = new Auth(config);
+const auth = new Auth(storage);
+if (!auth.isInitialized()) {
+  console.warn("[Server] Server is not initialized yet.");
+  console.warn("[Server] First device to run setup will set the server password.");
+  console.warn("[Server] Do not expose the server to the public internet before initialization.");
+}
 
 const app = express();
 app.use(express.json({ limit: "64kb" }));
@@ -51,6 +56,10 @@ app.use("/", express.static(path.join(__dirname, "web-ui")));
 
 /** Validates the dashboard session token (password hash) from the Authorization header. */
 function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!auth.isInitialized()) {
+    res.status(428).json({ error: "Server not initialized" });
+    return;
+  }
   const header = (req.headers.authorization ?? "") as string;
   const token = header.replace(/^Bearer\s+/i, "").trim();
   if (!auth.checkHash(token)) {
@@ -64,11 +73,40 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
 
 // Health check (public — used for uptime polling, no sensitive data)
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", uptime: process.uptime() });
+  res.json({ status: "ok", uptime: process.uptime(), initialized: auth.isInitialized() });
+});
+
+// Initialization status (public)
+app.get("/api/init-status", (_req, res) => {
+  res.json({ initialized: auth.isInitialized() });
+});
+
+// One-time initialization (public): set server password hash
+app.post("/api/init", (req, res) => {
+  if (auth.isInitialized()) {
+    res.status(409).json({ error: "Already initialized" });
+    return;
+  }
+  const { passwordHash } = (req.body ?? {}) as { passwordHash?: string };
+  if (!passwordHash) {
+    res.status(400).json({ error: "Missing passwordHash" });
+    return;
+  }
+  const result = auth.initialize(passwordHash, storage);
+  if (!result.ok) {
+    res.status(400).json({ error: result.reason ?? "Initialization failed" });
+    return;
+  }
+  console.log("[Server] Server initialized via /api/init.");
+  res.json({ ok: true });
 });
 
 // Dashboard login: validate password, return ok so client can store the hash as session token
 app.post("/api/ui-auth", (req, res) => {
+  if (!auth.isInitialized()) {
+    res.status(428).json({ error: "Server not initialized" });
+    return;
+  }
   const ip =
     ((req.headers["x-forwarded-for"] ?? "") as string).split(",")[0].trim() ||
     req.socket.remoteAddress ||
@@ -123,7 +161,6 @@ app.get("/api/sessions", requireAuth, (_req, res) => {
 app.post("/api/sessions/:clientId/revoke", requireAuth, (req, res) => {
   const { clientId } = req.params;
   wsServer?.disconnectClient(clientId);
-  storage.deleteClientSession(clientId);
   res.json({ ok: true });
 });
 

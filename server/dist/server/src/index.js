@@ -26,7 +26,12 @@ console.log(`[Server] TLS: ${useTls ? "enabled" : "disabled (data is E2E encrypt
 console.log(`[Server] Discovery port: ${config.discoveryPort}`);
 const storage = new storage_1.Storage(config);
 console.log("[Server] Storage initialized.");
-const auth = new auth_1.Auth(config);
+const auth = new auth_1.Auth(storage);
+if (!auth.isInitialized()) {
+    console.warn("[Server] Server is not initialized yet.");
+    console.warn("[Server] First device to run setup will set the server password.");
+    console.warn("[Server] Do not expose the server to the public internet before initialization.");
+}
 const app = (0, express_1.default)();
 app.use(express_1.default.json({ limit: "64kb" }));
 // Allow Obsidian (Electron renderer) to call the REST API
@@ -45,6 +50,10 @@ app.use("/", express_1.default.static(path_1.default.join(__dirname, "web-ui")))
 // ---- Auth middleware ----
 /** Validates the dashboard session token (password hash) from the Authorization header. */
 function requireAuth(req, res, next) {
+    if (!auth.isInitialized()) {
+        res.status(428).json({ error: "Server not initialized" });
+        return;
+    }
     const header = (req.headers.authorization ?? "");
     const token = header.replace(/^Bearer\s+/i, "").trim();
     if (!auth.checkHash(token)) {
@@ -56,10 +65,37 @@ function requireAuth(req, res, next) {
 // ---- Public endpoints ----
 // Health check (public — used for uptime polling, no sensitive data)
 app.get("/health", (_req, res) => {
-    res.json({ status: "ok", uptime: process.uptime() });
+    res.json({ status: "ok", uptime: process.uptime(), initialized: auth.isInitialized() });
+});
+// Initialization status (public)
+app.get("/api/init-status", (_req, res) => {
+    res.json({ initialized: auth.isInitialized() });
+});
+// One-time initialization (public): set server password hash
+app.post("/api/init", (req, res) => {
+    if (auth.isInitialized()) {
+        res.status(409).json({ error: "Already initialized" });
+        return;
+    }
+    const { passwordHash } = (req.body ?? {});
+    if (!passwordHash) {
+        res.status(400).json({ error: "Missing passwordHash" });
+        return;
+    }
+    const result = auth.initialize(passwordHash, storage);
+    if (!result.ok) {
+        res.status(400).json({ error: result.reason ?? "Initialization failed" });
+        return;
+    }
+    console.log("[Server] Server initialized via /api/init.");
+    res.json({ ok: true });
 });
 // Dashboard login: validate password, return ok so client can store the hash as session token
 app.post("/api/ui-auth", (req, res) => {
+    if (!auth.isInitialized()) {
+        res.status(428).json({ error: "Server not initialized" });
+        return;
+    }
     const ip = (req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() ||
         req.socket.remoteAddress ||
         "unknown";
@@ -105,7 +141,6 @@ app.get("/api/sessions", requireAuth, (_req, res) => {
 app.post("/api/sessions/:clientId/revoke", requireAuth, (req, res) => {
     const { clientId } = req.params;
     wsServer?.disconnectClient(clientId);
-    storage.setClientOffline(clientId);
     res.json({ ok: true });
 });
 app.get("/api/log", requireAuth, (_req, res) => {

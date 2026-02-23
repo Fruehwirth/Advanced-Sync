@@ -8,8 +8,6 @@ export interface ServerConfig {
     discoveryPort: number;
     /** Data directory for blobs, SQLite DB, and TLS certs. */
     dataDir: string;
-    /** Server password (clients must provide SHA-256 hash of this). */
-    serverPassword: string;
     /** Hostname for TLS certificate and discovery broadcasts. */
     hostname: string;
     /** Unique server identifier. */

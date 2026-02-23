@@ -10,10 +10,15 @@ export declare class Storage {
     private initSchema;
     getVaultSalt(): string | null;
     setVaultSalt(salt: string): void;
+    getServerPasswordHash(): string | null;
+    setServerPasswordHash(passwordHash: string): void;
     getCurrentSequence(): number;
     getManifest(): SyncManifest;
     getChangesSince(sequence: number): ChangeRecord[];
-    putFile(fileId: string, encryptedMeta: string, mtime: number, size: number, blobData: Buffer): number;
+    putFile(fileId: string, encryptedMeta: string, mtime: number, size: number, blobData: Buffer): {
+        sequence: number;
+        isNew: boolean;
+    };
     getFile(fileId: string): Buffer | null;
     getFileMeta(fileId: string): EncryptedFileEntry | null;
     deleteFile(fileId: string): number;
@@ -24,6 +29,7 @@ export declare class Storage {
     };
     upsertClientSession(clientId: string, deviceName: string, ip: string): void;
     setClientOffline(clientId: string): void;
+    deleteClientSession(clientId: string): void;
     getClientSessions(): ClientSession[];
     createToken(token: string, clientId: string, deviceName: string, ip: string): void;
     getToken(token: string): {

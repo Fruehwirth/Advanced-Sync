@@ -11,13 +11,29 @@ const crypto_1 = __importDefault(require("crypto"));
 const MAX_FAILURES = 5;
 const WINDOW_MS = 60000; // 1 minute
 class Auth {
-    constructor(config) {
+    constructor(storage) {
         this.rateLimits = new Map();
-        // Pre-compute SHA-256 hash of the server password for comparison
-        this.passwordHash = crypto_1.default
-            .createHash("sha256")
-            .update(config.serverPassword)
-            .digest("hex");
+        const persisted = storage.getServerPasswordHash();
+        this.passwordHash = persisted;
+    }
+    isInitialized() {
+        return !!this.passwordHash;
+    }
+    /** One-time initialization. Stores the password hash and enables auth. */
+    initialize(passwordHash, storage) {
+        if (this.passwordHash) {
+            return { ok: false, reason: "Already initialized" };
+        }
+        if (!Auth.isValidHexSha256(passwordHash)) {
+            return { ok: false, reason: "Invalid passwordHash" };
+        }
+        storage.setServerPasswordHash(passwordHash);
+        this.passwordHash = passwordHash;
+        this.rateLimits.clear();
+        return { ok: true };
+    }
+    static isValidHexSha256(hash) {
+        return /^[a-f0-9]{64}$/i.test(hash);
     }
     /**
      * Verify a client's password hash.
@@ -26,6 +42,9 @@ class Auth {
      * @returns true if authenticated, false if wrong password or rate limited
      */
     verify(clientHash, ip) {
+        if (!this.passwordHash) {
+            return { ok: false, reason: "Server not initialized" };
+        }
         // Check rate limit
         const limit = this.rateLimits.get(ip);
         if (limit) {
@@ -57,6 +76,8 @@ class Auth {
      */
     checkHash(hash) {
         try {
+            if (!this.passwordHash)
+                return false;
             const expected = Buffer.from(this.passwordHash, "hex");
             const provided = Buffer.from(hash, "hex");
             if (expected.length !== provided.length)

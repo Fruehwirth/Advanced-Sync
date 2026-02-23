@@ -1,12 +1,18 @@
 /**
  * Server authentication: password verification, token management, rate limiting.
  */
-import type { ServerConfig } from "./config";
 import type { Storage } from "./storage";
 export declare class Auth {
     private passwordHash;
     private rateLimits;
-    constructor(config: ServerConfig);
+    constructor(storage: Storage);
+    isInitialized(): boolean;
+    /** One-time initialization. Stores the password hash and enables auth. */
+    initialize(passwordHash: string, storage: Storage): {
+        ok: boolean;
+        reason?: string;
+    };
+    private static isValidHexSha256;
     /**
      * Verify a client's password hash.
      * @param clientHash - SHA-256 hash provided by the client

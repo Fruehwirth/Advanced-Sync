@@ -901,7 +901,7 @@ export class SyncEngine {
     );
     if (activityItem) {
       activityItem.status = "active";
-      this.onActivityChange();
+      this.scheduleActivityChange();
     }
 
     let failed = false;
@@ -924,7 +924,7 @@ export class SyncEngine {
         activityItem.path = filePath;
         activityItem.filename = filePath.split("/").pop() ?? filePath;
         activityItem.fileSize = entry.size;
-        this.onActivityChange();
+        this.scheduleActivityChange();
       }
 
       // Decrypt the raw binary blob directly — no JSON parsing needed
@@ -954,7 +954,7 @@ export class SyncEngine {
 
       if (activityItem) {
         activityItem.status = "completed";
-        this.onActivityChange();
+        this.scheduleActivityChange();
       }
     } catch (err: any) {
       console.error("[Sync] Error processing download:", err.message);
@@ -966,7 +966,7 @@ export class SyncEngine {
         if (activityItem) {
           activityItem.status = "failed";
           activityItem.error = "Decryption failed";
-          this.onActivityChange();
+          this.scheduleActivityChange();
         }
       }
 

@@ -12,6 +12,7 @@
   --color-green:  #4caf86;
   --color-red:    #e05252;
   --color-blue:   #4a9eff;
+  --color-yellow: #f2c94c;
   --font-interface: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --radius-s: 4px;
   --radius-m: 6px;
@@ -64,6 +65,7 @@ body{font-family:var(--font-interface);background:var(--background-primary);colo
 .log-entry:last-child{border-bottom:none}
 .log-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .log-entry.upload .log-dot{background:var(--color-green)}
+.log-entry.create .log-dot{background:var(--color-yellow)}
 .log-entry.remove .log-dot{background:var(--color-red)}
 .log-entry.connect .log-dot{background:var(--color-blue)}
 .log-text{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
