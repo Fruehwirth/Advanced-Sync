@@ -41,6 +41,18 @@ export async function deriveVaultKey(
 }
 
 /**
+ * Cache for the derived HMAC key — avoids re-exporting and re-importing
+ * the vault key on every single deriveFileId call.  The cache is keyed by
+ * the vault CryptoKey reference.
+ */
+let cachedHmacKey: CryptoKey | null = null;
+let cachedHmacSource: CryptoKey | null = null;
+
+/** Pre-compute hex lookup table for fast byte→hex conversion. */
+const HEX_TABLE: string[] = [];
+for (let i = 0; i < 256; i++) HEX_TABLE[i] = i.toString(16).padStart(2, "0");
+
+/**
  * Derive a deterministic opaque file ID from a vault path.
  * Uses HMAC-SHA256 with the vault key's raw bits as the HMAC key.
  * This ensures the server never sees real file paths.
@@ -49,27 +61,30 @@ export async function deriveFileId(
   path: string,
   vaultKey: CryptoKey
 ): Promise<string> {
-  // Export the AES key's raw bits to use as HMAC key material
-  const rawKey = await crypto.subtle.exportKey("raw", vaultKey);
-  const hmacKey = await crypto.subtle.importKey(
-    "raw",
-    rawKey,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+  // Re-derive the HMAC key only when the vault key changes
+  if (cachedHmacSource !== vaultKey || !cachedHmacKey) {
+    const rawKey = await crypto.subtle.exportKey("raw", vaultKey);
+    cachedHmacKey = await crypto.subtle.importKey(
+      "raw",
+      rawKey,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    cachedHmacSource = vaultKey;
+  }
 
   const signature = await crypto.subtle.sign(
     "HMAC",
-    hmacKey,
+    cachedHmacKey,
     encoder.encode(path)
   );
 
-  // Convert to hex string for use as file ID
+  // Fast hex conversion using lookup table
   const bytes = new Uint8Array(signature);
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) hex += HEX_TABLE[bytes[i]];
+  return hex;
 }
 
 /**

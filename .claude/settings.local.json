@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\michael\\\\Proton Drive\\\\fruehwirth.michael\\\\My files\\\\Projects\\\\Advanced-Sync\" && npm run build 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\michael\\\\Proton Drive\\\\fruehwirth.michael\\\\My files\\\\Projects\\\\Advanced-Sync\\\\server\" && npm run build 2>&1)",
+      "Bash(tail:*)"
+    ]
+  }
+}

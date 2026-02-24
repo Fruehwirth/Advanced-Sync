@@ -142,7 +142,11 @@ export default class AdvancedSyncPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const data = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // Mutate in place instead of replacing the reference — SyncEngine holds a direct
+    // reference to this.settings, so a new object would cause the engine to write
+    // credentials into a stale object that saveSettings() no longer serialises.
+    for (const key of Object.keys(this.settings)) delete (this.settings as any)[key];
+    Object.assign(this.settings, DEFAULT_SETTINGS, data ?? {});
   }
 
   async saveSettings(): Promise<void> {

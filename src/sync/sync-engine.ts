@@ -40,6 +40,8 @@ export interface SyncHistoryEntry {
   count: number;
   /** True while the change is queued offline and hasn't been sent yet. */
   pending?: boolean;
+  /** True for one render cycle when count just incremented — drives the flash animation. */
+  flash?: boolean;
 }
 
 /** Per-file activity tracking during active sync operations. */
@@ -52,6 +54,8 @@ export interface SyncActivityItem {
   fileSize?: number;
   error?: string;
   timestamp: number;
+  /** For download items: the encrypted fileId used to match incoming binary data. */
+  fileId?: string;
 }
 
 /** Sync plan computed by preview mode (dry-run). */
@@ -63,8 +67,9 @@ export interface SyncPlan {
 }
 
 const MAX_HISTORY = 50;
-const BATCH_SIZE = 20;            // Files per yield-to-event-loop during manifest build
-const MAX_CONCURRENT_DOWNLOADS = 3; // Max simultaneous decrypt+write ops on mobile
+const BATCH_SIZE = 50;             // Files per yield-to-event-loop during manifest build
+const MAX_CONCURRENT_DOWNLOADS = 6; // Max simultaneous download+decrypt+write ops
+const MAX_CONCURRENT_UPLOADS = 4;   // Max simultaneous read+encrypt+send ops
 
 /** Decrypted file metadata stored locally for sync comparison. */
 interface LocalFileInfo {
@@ -293,22 +298,26 @@ export class SyncEngine {
         if (entry.deleted) continue;
         const local = this.localManifest.get(fileId);
         if (!local) {
+          // Server has the file but we don't — download it (if our settings include this file type)
           const meta = await decryptMetadata<{ path: string }>(entry.encryptedMeta, this.vaultKey);
           const path = meta?.path ?? entry.fileId;
           if (!this.shouldSyncObsidianPath(path)) continue;
+          if (this.fileWatcher.shouldExclude(path)) continue;
           plan.toDownload.push({ fileId: entry.fileId, path, size: entry.size });
         } else if (local.path.startsWith(".obsidian/")) {
+          // .obsidian files always come from server during merge
           if (!this.shouldSyncObsidianPath(local.path)) continue;
           const meta = await decryptMetadata<{ path: string }>(entry.encryptedMeta, this.vaultKey);
           plan.toDownload.push({ fileId: entry.fileId, path: meta?.path ?? local.path, size: entry.size });
         } else {
-          const winner = resolveConflict(local.mtime, entry.mtime);
-          if (winner === "remote") {
+          // Both have it — only act if one side is strictly newer
+          if (entry.mtime > local.mtime) {
             const meta = await decryptMetadata<{ path: string }>(entry.encryptedMeta, this.vaultKey);
             plan.toDownload.push({ fileId: entry.fileId, path: meta?.path ?? local.path, size: entry.size });
-          } else {
+          } else if (local.mtime > entry.mtime) {
             plan.toUpload.push({ path: local.path, size: local.size });
           }
+          // Equal mtimes → already in sync, no-op
         }
       }
       for (const [fileId, local] of this.localManifest) {
@@ -361,6 +370,7 @@ export class SyncEngine {
         status: "pending",
         fileSize: item.size,
         timestamp: Date.now(),
+        fileId: item.fileId,
       });
     }
     this.scheduleActivityChange();
@@ -380,29 +390,33 @@ export class SyncEngine {
 
     this.pendingSequence = plan.serverSequence;
 
-    // Process uploads with yield
+    // Process uploads concurrently
     const uploadItems = this.activeItems.filter(i => i.direction === "upload");
-    await this.processWithYield(uploadItems, async (item, index) => {
+    let uploadsDone = 0;
+    await this.processConcurrent(uploadItems, async (item) => {
       item.status = "active";
       this.scheduleActivityChange();
-      current++;
-      this.onProgress(current, total, `Uploading ${index + 1}/${uploadItems.length}: ${item.filename}`);
       await this.uploadFile(item.path);
       item.status = "completed";
+      const done = ++uploadsDone;
+      current++;
+      this.onProgress(current, total, `Uploading ${done}/${uploadItems.length}`);
       this.scheduleActivityChange();
-    });
+    }, MAX_CONCURRENT_UPLOADS);
 
-    // Process deletes with yield
+    // Process deletes concurrently
     const deleteItems = this.activeItems.filter(i => i.direction === "delete");
-    await this.processWithYield(deleteItems, async (item, index) => {
+    let deletesDone = 0;
+    await this.processConcurrent(deleteItems, async (item) => {
       item.status = "active";
       this.scheduleActivityChange();
-      current++;
-      this.onProgress(current, total, `Deleting ${index + 1}/${deleteItems.length}: ${item.filename}`);
       await this.deleteLocalFile(item.path);
       item.status = "completed";
+      const done = ++deletesDone;
+      current++;
+      this.onProgress(current, total, `Deleting ${done}/${deleteItems.length}`);
       this.scheduleActivityChange();
-    });
+    }, MAX_CONCURRENT_UPLOADS);
 
     if (plan.toDownload.length === 0) {
       this.settings.lastSequence = this.pendingSequence!;
@@ -512,7 +526,8 @@ export class SyncEngine {
   private handleSessionRevoked(): void {
     this.settings.authToken = "";
     this.settings.encryptionKeyB64 = "";
-    this.settings.setupComplete = false;
+    // Do NOT clear setupComplete — the server URL and device config are still valid.
+    // The user just needs to re-enter their password to get a new session token.
     this.saveSettings();
     new Notice("Advanced Sync: Session revoked. Please re-enter your password in settings.", 8000);
   }
@@ -529,6 +544,29 @@ export class SyncEngine {
         await new Promise(r => setTimeout(r, 0));
       }
     }
+  }
+
+  /**
+   * Process items concurrently with a sliding-window limit.
+   * Unlike processWithYield, runs up to `concurrency` items in parallel.
+   */
+  private async processConcurrent<T>(
+    items: T[],
+    processor: (item: T, index: number) => Promise<void>,
+    concurrency: number
+  ): Promise<void> {
+    let next = 0;
+    const run = async (): Promise<void> => {
+      while (next < items.length) {
+        const idx = next++;
+        await processor(items[idx], idx);
+      }
+    };
+    const workers = [];
+    for (let i = 0; i < Math.min(concurrency, items.length); i++) {
+      workers.push(run());
+    }
+    await Promise.all(workers);
   }
 
   /**
@@ -722,13 +760,20 @@ export class SyncEngine {
             if (entry.deleted) continue;
             const local = this.localManifest.get(fileId);
             if (!local) {
+              // Server-only: only download if our settings include this file type.
+              // Decrypt metadata to check the path before queuing.
+              const meta = await decryptMetadata<{ path: string }>(entry.encryptedMeta, this.vaultKey!);
+              const path = meta?.path ?? entry.fileId;
+              if (!this.shouldSyncObsidianPath(path)) continue;
+              if (this.fileWatcher.shouldExclude(path)) continue;
               toDownload.push(entry);
             } else if (local.path.startsWith(".obsidian/")) {
               if (this.shouldSyncObsidianPath(local.path)) toDownload.push(entry);
             } else {
-              const winner = resolveConflict(local.mtime, entry.mtime);
-              if (winner === "remote") toDownload.push(entry);
-              else toUpload.push(local);
+              // Both have it — only act if one side is strictly newer
+              if (entry.mtime > local.mtime) toDownload.push(entry);
+              else if (local.mtime > entry.mtime) toUpload.push(local);
+              // Equal mtimes → already in sync, no-op
             }
           }
           for (const [fileId, local] of this.localManifest) {
@@ -797,29 +842,33 @@ export class SyncEngine {
 
     this.pendingSequence = msg.currentSequence;
 
-    // Process uploads with yield
+    // Process uploads concurrently
     const uploadItems = this.activeItems.filter(i => i.direction === "upload");
-    await this.processWithYield(uploadItems, async (item, index) => {
+    let uploadsDone = 0;
+    await this.processConcurrent(uploadItems, async (item) => {
       item.status = "active";
       this.scheduleActivityChange();
-      current++;
-      this.onProgress(current, total, `Uploading ${index + 1}/${uploadItems.length}: ${item.filename}`);
       await this.uploadFile(item.path);
       item.status = "completed";
+      const done = ++uploadsDone;
+      current++;
+      this.onProgress(current, total, `Uploading ${done}/${uploadItems.length}`);
       this.scheduleActivityChange();
-    });
+    }, MAX_CONCURRENT_UPLOADS);
 
-    // Process deletes with yield
+    // Process deletes concurrently
     const deleteItems = this.activeItems.filter(i => i.direction === "delete");
-    await this.processWithYield(deleteItems, async (item, index) => {
+    let deletesDone = 0;
+    await this.processConcurrent(deleteItems, async (item) => {
       item.status = "active";
       this.scheduleActivityChange();
-      current++;
-      this.onProgress(current, total, `Deleting ${index + 1}/${deleteItems.length}: ${item.filename}`);
       await this.deleteLocalFile(item.path);
       item.status = "completed";
+      const done = ++deletesDone;
+      current++;
+      this.onProgress(current, total, `Deleting ${done}/${deleteItems.length}`);
       this.scheduleActivityChange();
-    });
+    }, MAX_CONCURRENT_UPLOADS);
 
     if (toDownload.length === 0) {
       this.settings.lastSequence = this.pendingSequence!;
@@ -849,29 +898,45 @@ export class SyncEngine {
     if ((direction === "upload" || direction === "download" || direction === "delete" || direction === "create") && path.startsWith(".obsidian/")) {
       this.obsidianFilesChanged = true;
     }
-    const LOOK_BACK = 5;
-    for (let i = 0; i < Math.min(LOOK_BACK, this.history.length); i++) {
-      const entry = this.history[i];
-      if (entry.path === path && entry.direction === direction && !!entry.pending === pending) {
-        entry.count++;
-        entry.timestamp = Date.now();
-        if (i > 0) {
-          this.history.splice(i, 1);
-          this.history.unshift(entry);
-        }
-        this.notifyHistoryChange(this.pendingInitialDownloads > 0);
-        return;
+
+    // Find the most-recent "visible" entry for consecutive-check purposes.
+    // When hideObsidianInHistory is on, .obsidian entries are invisible to the user
+    // so they don't break the consecutive chain between two edits of the same file.
+    const hideObsidian = this.settings.hideObsidianInHistory ?? false;
+    const isHidden = (p: string) => hideObsidian && p.startsWith(".obsidian/");
+
+    let prevIdx = -1;
+    for (let i = 0; i < this.history.length; i++) {
+      if (!isHidden(this.history[i].path)) {
+        prevIdx = i;
+        break;
       }
     }
-    this.history.unshift({
-      path,
-      filename: path.split("/").pop() ?? path,
-      direction,
-      timestamp: Date.now(),
-      count: 1,
-      pending: pending || undefined,
-    });
-    if (this.history.length > MAX_HISTORY) this.history.pop();
+
+    const prev = prevIdx >= 0 ? this.history[prevIdx] : null;
+    if (prev && prev.path === path && prev.direction === direction && !!prev.pending === pending) {
+      // Consecutive edit of the same file — increment count in place
+      prev.count++;
+      prev.timestamp = Date.now();
+      prev.flash = true;
+      // If hidden .obsidian entries are sitting before it, bubble it to the top
+      if (prevIdx > 0) {
+        this.history.splice(prevIdx, 1);
+        this.history.unshift(prev);
+      }
+    } else {
+      // Not consecutive — create a new entry
+      this.history.unshift({
+        path,
+        filename: path.split("/").pop() ?? path,
+        direction,
+        timestamp: Date.now(),
+        count: 1,
+        pending: pending || undefined,
+      });
+      if (this.history.length > MAX_HISTORY) this.history.pop();
+    }
+
     this.notifyHistoryChange(this.pendingInitialDownloads > 0);
   }
 
@@ -947,9 +1012,9 @@ export class SyncEngine {
     if (!entry || !downloadFileId) return;
     this.pendingDownloads.delete(downloadFileId);
 
-    // Update activity item status
+    // Update activity item status — match by fileId field (set by applySyncPlan) or path (set by handleSyncResponse)
     const activityItem = this.activeItems.find(
-      i => i.direction === "download" && i.path === downloadFileId
+      i => i.direction === "download" && (i.fileId === downloadFileId || i.path === downloadFileId)
     );
     if (activityItem) {
       activityItem.status = "active";

@@ -1,7 +1,7 @@
 {
   "id": "advanced-sync",
   "name": "Advanced Sync",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "minAppVersion": "1.0.0",
   "description": "End-to-end encrypted vault sync across devices via a self-hosted Docker server.",
   "author": "fruehwirth",

@@ -3,7 +3,7 @@
  * Includes the full inline setup wizard (single password, sync preview) and the dashboard.
  */
 
-import { App, Modal, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import { sha256String } from "./crypto/encryption";
 import { discoverServers, isDiscoveryAvailable } from "./network/discovery";
 import type { InitialSyncStrategy } from "./types";
@@ -54,27 +54,6 @@ function focusAndScroll(input: HTMLElement): void {
   }, { once: true });
 }
 
-/** Minimal in-renderer confirmation dialog — avoids Electron native dialogs which break focus. */
-class ConfirmModal extends Modal {
-  private message: string;
-  private onConfirm: () => void;
-
-  constructor(app: App, message: string, onConfirm: () => void) {
-    super(app);
-    this.message = message;
-    this.onConfirm = onConfirm;
-  }
-
-  onOpen(): void {
-    this.contentEl.createEl("p", { text: this.message, attr: { style: "margin-bottom:16px;line-height:1.5;" } });
-    const actions = this.contentEl.createDiv({ attr: { style: "display:flex;gap:8px;justify-content:flex-end;" } });
-    actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-    const ok = actions.createEl("button", { text: "Reset", cls: "mod-warning" });
-    ok.addEventListener("click", () => { this.close(); this.onConfirm(); });
-  }
-
-  onClose(): void { this.contentEl.empty(); }
-}
 
 export class AdvancedSyncSettingsTab extends PluginSettingTab {
   plugin: AdvancedSyncPlugin;
@@ -85,6 +64,9 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   notifyProgressChanged: ((current: number, total: number, detail: string) => void) | null = null;
   /** Called by main.ts when activity items change. */
   notifyActivityChanged: (() => void) | null = null;
+
+  // ---- Dashboard state ----
+  private confirmingReset = false;
 
   // ---- Wizard state ----
   private wStep = 0;
@@ -109,6 +91,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   private previewPlan: import("./sync/sync-engine").SyncPlan | null = null;
   private previewError = "";
   private previewLoading = false;
+  private wApplying = false;
 
   constructor(app: App, plugin: AdvancedSyncPlugin) {
     super(app, plugin);
@@ -136,6 +119,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     this.previewPlan = null;
     this.previewError = "";
     this.previewLoading = false;
+    this.wApplying = false;
   }
 
   hide(): void {
@@ -143,6 +127,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
       clearTimeout(this.pingDebounceTimer);
       this.pingDebounceTimer = null;
     }
+    this.confirmingReset = false;
     this.notifyDataChanged = null;
     this.notifyProgressChanged = null;
     this.notifyActivityChanged = null;
@@ -175,9 +160,11 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     for (let i = 0; i < TOTAL_STEPS; i++) {
       const stepEl = indicator.createDiv("as-wizard-step-container");
       const iconWrap = stepEl.createSpan("as-wizard-step-icon");
-      setIcon(iconWrap, stepIcons[i]);
+      const isApplying = i === 7 && this.wStep === 7 && this.wApplying;
+      setIcon(iconWrap, isApplying ? "loader-2" : stepIcons[i]);
       if (i === this.wStep) iconWrap.addClass("active");
       if (i < this.wStep) iconWrap.addClass("completed");
+      if (isApplying) iconWrap.addClass("as-wizard-step-spinning");
       stepEl.createDiv({ text: stepNames[i], cls: "as-wizard-step-label" });
     }
 
@@ -716,51 +703,9 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     if (total === 0) {
       body.createEl("p", { text: "Everything is already in sync! No changes needed.", cls: "as-wizard-desc" });
     } else {
-      // Total download size
       const totalDlSize = plan.toDownload.reduce((s, f) => s + f.size, 0);
       if (totalDlSize > 0) {
         body.createEl("p", { text: `Total download: ${formatSize(totalDlSize)}`, cls: "as-wizard-desc" });
-      }
-
-      // File lists (scrollable)
-      const listsContainer = body.createDiv("as-preview-lists");
-
-      if (plan.toDownload.length > 0) {
-        const section = listsContainer.createDiv("as-preview-section as-preview-dl-section");
-        section.createDiv({ text: `Downloads (${plan.toDownload.length})`, cls: "as-preview-section-title" });
-        const list = section.createDiv("as-preview-file-list");
-        for (const f of plan.toDownload.slice(0, 100)) {
-          const row = list.createDiv("as-preview-file-row");
-          row.createSpan({ text: f.path.split("/").pop() ?? f.path, cls: "as-preview-file-name" });
-          if (f.size > 0) row.createSpan({ text: formatSize(f.size), cls: "as-preview-file-size" });
-        }
-        if (plan.toDownload.length > 100) {
-          list.createDiv({ text: `... and ${plan.toDownload.length - 100} more`, cls: "as-preview-more" });
-        }
-      }
-
-      if (plan.toUpload.length > 0) {
-        const section = listsContainer.createDiv("as-preview-section as-preview-ul-section");
-        section.createDiv({ text: `Uploads (${plan.toUpload.length})`, cls: "as-preview-section-title" });
-        const list = section.createDiv("as-preview-file-list");
-        for (const f of plan.toUpload.slice(0, 100)) {
-          const row = list.createDiv("as-preview-file-row");
-          row.createSpan({ text: f.path.split("/").pop() ?? f.path, cls: "as-preview-file-name" });
-          if (f.size > 0) row.createSpan({ text: formatSize(f.size), cls: "as-preview-file-size" });
-        }
-        if (plan.toUpload.length > 100) {
-          list.createDiv({ text: `... and ${plan.toUpload.length - 100} more`, cls: "as-preview-more" });
-        }
-      }
-
-      if (plan.toDelete.length > 0) {
-        const section = listsContainer.createDiv("as-preview-section as-preview-del-section");
-        section.createDiv({ text: `Deletes (${plan.toDelete.length})`, cls: "as-preview-section-title" });
-        const list = section.createDiv("as-preview-file-list");
-        for (const f of plan.toDelete.slice(0, 100)) {
-          const row = list.createDiv("as-preview-file-row");
-          row.createSpan({ text: f.path.split("/").pop() ?? f.path, cls: "as-preview-file-name" });
-        }
       }
     }
 
@@ -778,20 +723,38 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   }
 
   private wRenderApply(body: HTMLElement): void {
-
     const state = this.plugin.syncEngine.state;
+
     if (state === "idle") {
       body.createEl("p", { text: "Sync complete! All files are up to date.", cls: "as-wizard-desc" });
+    } else {
+      body.createEl("p", { text: "Syncing… Keep this tab open until it finishes.", cls: "as-wizard-desc" });
+    }
 
-      const doneBtn = body.createEl("button", { text: "Done", cls: "mod-cta as-start-btn" });
-      doneBtn.addEventListener("click", () => {
-        this.wStep = 0; // Exit wizard, fall through to dashboard
-        this.display();
-      });
+    // Activity renderer — same component used in the sidebar and dashboard
+    const activityContainer = body.createDiv("as-apply-activity");
+    const renderer = new SyncActivityRenderer(activityContainer, {
+      getActiveItems: () => this.plugin.syncEngine?.activeItems ?? [],
+      getHistory: () => {
+        const h = this.plugin.syncEngine?.history ?? [];
+        return this.plugin.settings.hideObsidianInHistory
+          ? h.filter(e => !e.path.startsWith(".obsidian/"))
+          : h;
+      },
+      getState: () => this.plugin.syncEngine?.state ?? "disconnected",
+      maxHistoryItems: 50,
+    });
+    renderer.render();
+
+    // Buttons appear below the activity list once sync is complete
+    if (state === "idle") {
+      const btnRow = body.createDiv("as-apply-btn-row");
 
       if (this.plugin.syncEngine.hasObsidianFilesChanged) {
-        const restartBtn = body.createEl("button", { text: "Restart Obsidian", cls: "as-start-btn" });
-        restartBtn.addEventListener("click", () => {
+        const reloadBtn = btnRow.createEl("button", { cls: "as-apply-btn as-apply-reload-btn" });
+        setIcon(reloadBtn.createSpan(), "refresh-cw");
+        reloadBtn.createSpan({ text: "Reload Obsidian" });
+        reloadBtn.addEventListener("click", () => {
           const ids = ["app:restart", "app:reload"];
           for (const id of ids) {
             try {
@@ -808,48 +771,23 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
           new Notice("Advanced Sync: Please restart Obsidian manually to apply .obsidian changes.");
         });
       }
-    } else {
-      // During initial sync, the per-file lists can be overwhelming (especially on mobile).
-      // Show only a lightweight progress indicator here.
-      const wrap = body.createDiv("as-apply-activity");
 
-      const info = wrap.createDiv();
-      info.createEl("p", {
-        text: "Syncing… Keep this tab open until it finishes.",
-        cls: "as-wizard-desc",
+      const doneBtn = btnRow.createEl("button", { text: "Done", cls: "mod-cta as-apply-btn" });
+      doneBtn.addEventListener("click", () => {
+        this.wStep = 0; // Exit wizard, fall through to dashboard
+        this.display();
       });
-
-      const progressEl = wrap.createDiv("as-history-view-progress");
-      const progressInner = progressEl.createDiv("as-history-view-progress-inner");
-      const progressFill = progressInner.createDiv("as-history-view-progress-bar");
-      const progressText = progressEl.createDiv("as-history-view-progress-text");
-      progressEl.style.display = "none";
-
-      const setProgress = (current: number, total: number, detail: string) => {
-        if (total === 0 || current >= total) {
-          progressEl.style.display = "none";
-          progressFill.style.width = "0%";
-          progressText.textContent = "";
-          return;
-        }
-        progressEl.style.display = "block";
-        const pct = Math.round((current / total) * 100);
-        progressFill.style.width = `${pct}%`;
-        const remaining = total - current;
-        progressText.textContent = remaining > 0
-          ? `${remaining} file${remaining !== 1 ? "s" : ""} remaining — ${detail}`
-          : detail;
-      };
-
-      // Wire up updates
-      this.notifyActivityChanged = () => {};
-      this.notifyProgressChanged = (current, total, detail) => setProgress(current, total, detail);
-      this.notifyDataChanged = () => {
-        if (this.plugin.syncEngine.state === "idle") {
-          this.display();
-        }
-      };
     }
+
+    this.notifyActivityChanged = () => renderer.refreshActive();
+    this.notifyProgressChanged = (current, total, detail) => renderer.setProgress(current, total, detail);
+    this.notifyDataChanged = () => {
+      renderer.refreshHistory();
+      if (this.plugin.syncEngine.state === "idle") {
+        this.wApplying = false;
+        this.display();
+      }
+    };
   }
 
   private addWizardToggle(parent: HTMLElement, label: string, desc: string, initial: boolean, onChange: (v: boolean) => void): void {
@@ -945,9 +883,16 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
         // Override the sync response handler temporarily
         const originalHandler = this.plugin.syncEngine["connection"].onSyncResponse;
+        const originalStateChange = this.plugin.syncEngine["connection"].onStateChange;
+
+        const restoreHandlers = () => {
+          this.plugin.syncEngine["connection"].onSyncResponse = originalHandler;
+          this.plugin.syncEngine["connection"].onStateChange = originalStateChange;
+        };
+
         this.plugin.syncEngine["connection"].onSyncResponse = async (msg) => {
           clearTimeout(timeout);
-          this.plugin.syncEngine["connection"].onSyncResponse = originalHandler;
+          restoreHandlers();
           try {
             const preview = await this.plugin.syncEngine.computeSyncPreview(msg);
             resolve(preview);
@@ -957,12 +902,10 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
         };
 
         // Also handle auth errors
-        const originalStateChange = this.plugin.syncEngine["connection"].onStateChange;
-        const self = this;
         this.plugin.syncEngine["connection"].onStateChange = (state, error) => {
           if (state === "error") {
             clearTimeout(timeout);
-            this.plugin.syncEngine["connection"].onStateChange = originalStateChange;
+            restoreHandlers();
             reject(new Error(error || "Connection failed"));
           } else {
             originalStateChange(state, error);
@@ -985,6 +928,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   private async wApplySync(): Promise<void> {
     if (!this.previewPlan) return;
 
+    this.wApplying = true;
     this.wStep = 7;
     this.display();
 
@@ -998,6 +942,19 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
   // ================================================================
 
   private renderDashboard(container: HTMLElement): void {
+    // Reconnect banner — shown when session has expired or credentials are missing
+    if (!this.plugin.settings.authToken || !this.plugin.settings.encryptionKeyB64) {
+      const banner = container.createDiv("as-dash-reconnect-banner");
+      banner.createSpan({ text: "Session expired — re-enter your password to reconnect.", cls: "as-dash-reconnect-msg" });
+      const reconnectBtn = banner.createEl("button", { text: "Reconnect", cls: "mod-cta" });
+      reconnectBtn.addEventListener("click", () => {
+        this.resetWizard();
+        this.serverInitialized = true; // Server is already initialized
+        this.wStep = 2;                // Jump straight to password entry
+        this.display();
+      });
+    }
+
     // Dashboard section
     container.createDiv({ cls: "as-settings-section-label", text: "Dashboard" });
     const dash = container.createDiv("as-settings-dash");
@@ -1065,7 +1022,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
 
     // Wire up live callbacks
     this.notifyDataChanged = () => {
-      activityRenderer.render();
+      activityRenderer.refreshActive();
     };
     this.notifyProgressChanged = (current, total, detail) => {
       activityRenderer.setProgress(current, total, detail);
@@ -1116,25 +1073,35 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     container.createDiv({ cls: "as-settings-section-label", text: "Advanced" });
     new Setting(container).setName("Force full sync").setDesc("Re-sync all files from scratch")
       .addButton(btn => { btn.setButtonText("Force Sync"); btn.onClick(() => this.plugin.syncEngine.forceSync()); });
-    new Setting(container).setName("Reset sync state").setDesc("Clear all local sync state. Your vault files are not deleted.")
-      .addButton(btn => {
-        btn.setButtonText("Reset").setWarning();
-        btn.onClick(() => {
-          new ConfirmModal(
-            this.app,
-            "All sync settings and credentials will be deleted. Your vault files are not affected.",
-            async () => {
-              this.plugin.syncEngine.destroy();
-              try {
-                const dataPath = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}/data.json`;
-                await this.plugin.app.vault.adapter.remove(dataPath);
-              } catch { /* file may not exist */ }
-              await this.plugin.loadSettings();
-              this.resetWizard();
-              this.display();
-            }
-          ).open();
-        });
+    if (this.confirmingReset) {
+      const row = container.createDiv("as-confirm-reset-row");
+      row.createSpan({ text: "All credentials and settings will be deleted. Vault files are not affected.", cls: "as-confirm-reset-msg" });
+      const btns = row.createDiv("as-confirm-reset-btns");
+      btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => {
+        this.confirmingReset = false;
+        this.display();
       });
+      const confirmBtn = btns.createEl("button", { text: "Confirm Reset", cls: "mod-warning" });
+      confirmBtn.addEventListener("click", async () => {
+        this.confirmingReset = false;
+        this.plugin.syncEngine.destroy();
+        try {
+          const dataPath = `${this.plugin.app.vault.configDir}/plugins/${this.plugin.manifest.id}/data.json`;
+          await this.plugin.app.vault.adapter.remove(dataPath);
+        } catch { /* file may not exist */ }
+        await this.plugin.loadSettings();
+        this.resetWizard();
+        this.display();
+      });
+    } else {
+      new Setting(container).setName("Reset sync state").setDesc("Clear all local sync state. Your vault files are not deleted.")
+        .addButton(btn => {
+          btn.setButtonText("Reset").setWarning();
+          btn.onClick(() => {
+            this.confirmingReset = true;
+            this.display();
+          });
+        });
+    }
   }
 }

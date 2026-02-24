@@ -26,13 +26,6 @@ const STATE_LABELS: Record<string, string> = {
   error:          "Error",
 };
 
-const STATUS_ICON: Record<string, string> = {
-  pending:   "clock",
-  active:    "loader",
-  completed: "check",
-  failed:    "alert-triangle",
-};
-
 function formatTimeAgo(ts: number): string {
   const diff = Date.now() - ts;
   const m = Math.floor(diff / 60000);
@@ -67,7 +60,6 @@ export class SyncActivityRenderer {
   private container: HTMLElement;
   private options: SyncActivityRendererOptions;
   private badgeEl: HTMLElement | null = null;
-  private activeSection: HTMLElement | null = null;
   private historySection: HTMLElement | null = null;
   private progressEl: HTMLElement | null = null;
   private progressBarFill: HTMLElement | null = null;
@@ -78,7 +70,7 @@ export class SyncActivityRenderer {
     this.options = options;
   }
 
-  /** Full re-render (state badge + active items + history). */
+  /** Full re-render (state badge + progress bar + unified history list). */
   render(): void {
     this.container.empty();
 
@@ -93,28 +85,20 @@ export class SyncActivityRenderer {
     this.progressTextEl = this.progressEl.createDiv("as-history-view-progress-text");
     this.progressEl.style.display = "none";
 
-    // Active sync section
-    this.activeSection = this.container.createDiv("as-activity-active");
-    this.renderActiveItems();
-
-    // History section
+    // Unified list: in-progress items (grayed) followed by history
     this.historySection = this.container.createDiv("as-activity-history");
     this.renderHistory();
   }
 
-  /** Incremental update: just refresh active items section. */
+  /** Incremental update: refresh the unified list (includes in-progress items). */
   refreshActive(): void {
-    if (this.activeSection) {
-      this.renderActiveItems();
-    }
+    if (this.historySection) this.renderHistory();
     this.renderBadge();
   }
 
-  /** Incremental update: just refresh history section. */
+  /** Incremental update: refresh the unified list. */
   refreshHistory(): void {
-    if (this.historySection) {
-      this.renderHistory();
-    }
+    if (this.historySection) this.renderHistory();
   }
 
   /** Update progress bar. */
@@ -144,10 +128,8 @@ export class SyncActivityRenderer {
   /** Destroy and clean up. */
   destroy(): void {
     this.container.empty();
-    // If the badge lives in an external container, clear it too
     if (this.options.badgeContainer) this.options.badgeContainer.empty();
     this.badgeEl = null;
-    this.activeSection = null;
     this.historySection = null;
     this.progressEl = null;
     this.progressBarFill = null;
@@ -161,71 +143,19 @@ export class SyncActivityRenderer {
     const badge = this.badgeEl.createDiv(`as-history-view-badge as-state-${state}`);
     badge.createSpan("as-history-view-badge-dot");
     badge.createSpan({ text: STATE_LABELS[state] || state });
-
-    // Hide progress when not syncing
-    if (state !== "syncing" && state !== "connecting" && state !== "authenticating") {
-      this.clearProgress();
-    }
-  }
-
-  private renderActiveItems(): void {
-    if (!this.activeSection) return;
-    this.activeSection.empty();
-
-    const items = this.options.getActiveItems();
-    const activeCount = items.filter(i => i.status === "active" || i.status === "pending").length;
-
-    if (activeCount === 0) {
-      this.activeSection.style.display = "none";
-      return;
-    }
-
-    this.activeSection.style.display = "block";
-
-    // Overall progress summary
-    const completed = items.filter(i => i.status === "completed").length;
-    const total = items.length;
-    const summaryEl = this.activeSection.createDiv("as-activity-summary");
-    summaryEl.textContent = `Syncing ${completed} / ${total} files`;
-
-    // Per-file rows (show active and pending items, limit display)
-    const visibleItems = items.filter(i => i.status !== "completed").slice(0, 10);
-    for (const item of visibleItems) {
-      const row = this.activeSection.createDiv(`as-activity-row as-activity-${item.status}`);
-
-      const statusIcon = row.createSpan("as-activity-status-icon");
-      setIcon(statusIcon, STATUS_ICON[item.status] || "circle");
-      if (item.status === "active") {
-        statusIcon.addClass("as-spin");
-      }
-
-      const info = row.createDiv("as-activity-info");
-      const nameRow = info.createDiv("as-activity-name-row");
-      nameRow.createSpan({ text: item.filename, cls: "as-activity-name" });
-
-      if (item.fileSize) {
-        nameRow.createSpan({ text: formatSize(item.fileSize), cls: "as-activity-size" });
-      }
-
-      if (item.error) {
-        info.createDiv({ text: item.error, cls: "as-activity-error" });
-      }
-
-      const dirIcon = row.createSpan("as-history-view-icon");
-      dirIcon.addClass(`as-dir-${item.direction}`);
-      setIcon(dirIcon, DIRECTION_ICON[item.direction] || "circle");
-    }
   }
 
   private renderHistory(): void {
     if (!this.historySection) return;
     this.historySection.empty();
 
+    const inProgress = this.options.getActiveItems().filter(
+      i => i.status === "active" || i.status === "pending"
+    );
     const history = this.options.getHistory();
     const maxItems = this.options.maxHistoryItems ?? 50;
 
-    if (history.length === 0) {
-      // Show contextual empty state
+    if (inProgress.length === 0 && history.length === 0) {
       const state = this.options.getState();
       const configured = this.options.isConfigured?.() ?? true;
       if (!configured && state === "disconnected") {
@@ -241,17 +171,48 @@ export class SyncActivityRenderer {
 
     const isFileDirection = (d: string) => ["upload", "download", "delete", "create"].includes(d);
 
+    // In-progress items — same row shape as history, grayed out
+    for (const item of inProgress) {
+      const row = this.historySection.createDiv("as-history-view-row as-history-view-row-pending");
+
+      const icon = row.createSpan("as-history-view-icon");
+      icon.addClass(`as-dir-${item.direction}`);
+      setIcon(icon, DIRECTION_ICON[item.direction] || "arrow-right");
+
+      const info = row.createDiv("as-history-view-info");
+      const nameRow = info.createDiv("as-history-view-name-row");
+
+      const dotIdx = item.filename.lastIndexOf(".");
+      const hasExt = dotIdx > 0;
+      const displayName = hasExt ? item.filename.substring(0, dotIdx) : item.filename;
+      const ext = hasExt ? item.filename.substring(dotIdx + 1) : "";
+      nameRow.createSpan({ text: displayName, cls: "as-history-view-name" });
+      if (hasExt && ext.toLowerCase() !== "md") {
+        nameRow.createSpan({ text: ext.toUpperCase(), cls: "as-history-view-ext" });
+      }
+
+      if (isFileDirection(item.direction)) {
+        info.createDiv({ text: item.path, cls: "as-history-view-path" });
+      }
+
+      row.createSpan({
+        text: item.status === "active" ? "syncing…" : "waiting…",
+        cls: "as-history-view-time as-history-view-time-pending",
+      });
+    }
+
+    // Completed history entries
     for (const entry of history.slice(0, maxItems)) {
       const rowClasses = ["as-history-view-row"];
       if (entry.pending) rowClasses.push("as-history-view-row-pending");
-      if (isFileDirection(entry.direction) && this.options.onNavigate && !entry.pending && entry.direction !== "delete") {
-        rowClasses.push("as-history-view-row-clickable");
-      }
+      const isNavigable = isFileDirection(entry.direction) && this.options.onNavigate
+        && !entry.pending && entry.direction !== "delete"
+        && !entry.path.startsWith(".obsidian/");
+      if (isNavigable) rowClasses.push("as-history-view-row-clickable");
       const row = this.historySection.createDiv(rowClasses.join(" "));
 
-      // Click-to-navigate for file entries (not deletes, not pending)
-      if (isFileDirection(entry.direction) && this.options.onNavigate && !entry.pending && entry.direction !== "delete") {
-        const navigate = this.options.onNavigate;
+      if (isNavigable) {
+        const navigate = this.options.onNavigate!;
         row.addEventListener("click", () => navigate(entry.path));
       }
 
@@ -262,23 +223,23 @@ export class SyncActivityRenderer {
       const info = row.createDiv("as-history-view-info");
       const nameRow = info.createDiv("as-history-view-name-row");
 
-      // Split filename and extension
       const dotIdx = entry.filename.lastIndexOf(".");
       const hasExt = dotIdx > 0;
       const displayName = hasExt ? entry.filename.substring(0, dotIdx) : entry.filename;
       const ext = hasExt ? entry.filename.substring(dotIdx + 1) : "";
-
       nameRow.createSpan({ text: displayName, cls: "as-history-view-name" });
 
-      // Show extension badge for non-.md files
       if (hasExt && ext.toLowerCase() !== "md") {
         nameRow.createSpan({ text: ext.toUpperCase(), cls: "as-history-view-ext" });
       }
 
       if (entry.count > 1) {
-        const countEl = nameRow.createSpan({ text: `\u00d7${entry.count}`, cls: "as-history-view-count as-history-view-count-flash" });
-        // Remove flash class after animation completes
-        countEl.addEventListener("animationend", () => countEl.removeClass("as-history-view-count-flash"), { once: true });
+        const flashNow = (entry as any).flash === true;
+        if (flashNow) (entry as any).flash = false;
+        const countCls = flashNow
+          ? "as-history-view-count as-history-view-count-flash"
+          : "as-history-view-count";
+        nameRow.createSpan({ text: `\u00d7${entry.count}`, cls: countCls });
       }
 
       if (isFileDirection(entry.direction)) {
