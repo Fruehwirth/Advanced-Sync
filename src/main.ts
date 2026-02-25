@@ -12,6 +12,7 @@ import { SyncHistoryView, SYNC_HISTORY_VIEW_TYPE } from "./ui/sync-history-view"
 import { AdvancedSyncSettingsTab } from "./settings";
 import type { AdvancedSyncSettings } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
+import type { FileChange } from "./sync/file-watcher";
 
 /** CSS variables to forward to the server web UI. */
 const THEME_VARS = [
@@ -38,6 +39,7 @@ export default class AdvancedSyncPlugin extends Plugin {
   private popup!: SyncPopup;
   private settingsTab!: AdvancedSyncSettingsTab;
   private currentState: SyncState = "disconnected";
+  private pendingChanges: FileChange[] = [];
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -47,7 +49,13 @@ export default class AdvancedSyncPlugin extends Plugin {
       await this.saveSettings();
     }
 
-    this.syncEngine = new SyncEngine(this.app, this.settings, () => this.saveSettings());
+    this.syncEngine = new SyncEngine(
+      this.app,
+      this.settings,
+      () => this.saveSettings(),
+      this.pendingChanges,
+      (changes) => { this.pendingChanges = changes; this.saveSettings(); }
+    );
 
     this.syncEngine.onStateChange = (state, detail) => {
       this.handleStateChange(state, detail);
@@ -106,6 +114,7 @@ export default class AdvancedSyncPlugin extends Plugin {
         () => this.syncEngine?.activeItems ?? [],
         (path) => { this.app.workspace.openLinkText(path, "", false); },
         () => this.settings.setupComplete,
+        (path) => { this.app.workspace.openLinkText(path, "", "tab"); },
       )
     );
 
@@ -142,15 +151,18 @@ export default class AdvancedSyncPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const data = await this.loadData();
+    // Extract persisted pending changes before applying to settings
+    const { _pendingChanges, ...settingsData } = data ?? {};
+    this.pendingChanges = Array.isArray(_pendingChanges) ? _pendingChanges : [];
     // Mutate in place instead of replacing the reference — SyncEngine holds a direct
     // reference to this.settings, so a new object would cause the engine to write
     // credentials into a stale object that saveSettings() no longer serialises.
     for (const key of Object.keys(this.settings)) delete (this.settings as any)[key];
-    Object.assign(this.settings, DEFAULT_SETTINGS, data ?? {});
+    Object.assign(this.settings, DEFAULT_SETTINGS, settingsData ?? {});
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    await this.saveData({ ...this.settings, _pendingChanges: this.pendingChanges });
   }
 
   async runSetupWizard(): Promise<void> {
@@ -270,7 +282,7 @@ export default class AdvancedSyncPlugin extends Plugin {
     }
   }
 
-  private refreshHistoryViews(): void {
+  refreshHistoryViews(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(SYNC_HISTORY_VIEW_TYPE)) {
       if (leaf.view instanceof SyncHistoryView) leaf.view.refresh();
     }

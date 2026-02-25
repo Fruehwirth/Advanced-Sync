@@ -16,6 +16,7 @@ export class SyncHistoryView extends ItemView {
   private getActiveItems: () => SyncActivityItem[];
   private onNavigate?: (path: string) => void;
   private isConfigured?: () => boolean;
+  private onNavigateNewTab?: (path: string) => void;
   private renderer: SyncActivityRenderer | null = null;
 
   constructor(
@@ -25,6 +26,7 @@ export class SyncHistoryView extends ItemView {
     getActiveItems: () => SyncActivityItem[],
     onNavigate?: (path: string) => void,
     isConfigured?: () => boolean,
+    onNavigateNewTab?: (path: string) => void,
   ) {
     super(leaf);
     this.getHistory = getHistory;
@@ -32,6 +34,7 @@ export class SyncHistoryView extends ItemView {
     this.getActiveItems = getActiveItems;
     this.onNavigate = onNavigate;
     this.isConfigured = isConfigured;
+    this.onNavigateNewTab = onNavigateNewTab;
   }
 
   getViewType(): string { return SYNC_HISTORY_VIEW_TYPE; }
@@ -58,6 +61,7 @@ export class SyncHistoryView extends ItemView {
       badgeContainer: badgeSlot,
       onNavigate: this.onNavigate,
       isConfigured: this.isConfigured,
+      onNavigateNewTab: this.onNavigateNewTab,
     });
     this.renderer.render();
   }

@@ -1372,6 +1372,15 @@
 .as-history-view-row-pending { opacity: 0.5; }
 .as-history-view-time-pending { font-style: italic; color: var(--text-muted); }
 
+/* Spinner on actively-syncing rows */
+.as-history-view-spinner {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  animation: as-spin 1s linear infinite;
+}
+.as-history-view-spinner svg { width: 12px; height: 12px; }
+
 .as-history-view-path {
   font-size: 11px;
   color: var(--text-faint);

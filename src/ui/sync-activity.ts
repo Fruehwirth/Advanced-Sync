@@ -17,6 +17,29 @@ const DIRECTION_ICON: Record<string, string> = {
   error:      "alert-triangle",
 };
 
+/** Extensions produced by Advanced Archive (archiving operation). */
+const ARCHIVE_EXTS = new Set([".zip", ".tar", ".gz", ".7z", ".archived"]);
+/** Extensions produced by Advanced Encrypt (encrypting operation). */
+const ENCRYPT_EXTS = new Set([".enc", ".encrypted", ".aenc"]);
+
+function getFileExt(path: string): string {
+  const dot = path.lastIndexOf(".");
+  return dot > 0 ? path.substring(dot).toLowerCase() : "";
+}
+
+/** Return a plugin-specific icon name if this history entry represents an
+ *  archive or encrypt operation (detected by extension change on rename). */
+function getPluginOpIcon(entry: SyncHistoryEntry): string | null {
+  if (!entry.oldPath) return null;
+  const fromExt = getFileExt(entry.oldPath);
+  const toExt   = getFileExt(entry.path);
+  if (ARCHIVE_EXTS.has(toExt)  && !ARCHIVE_EXTS.has(fromExt))  return "archive";
+  if (!ARCHIVE_EXTS.has(toExt) && ARCHIVE_EXTS.has(fromExt))   return "archive-restore";
+  if (ENCRYPT_EXTS.has(toExt)  && !ENCRYPT_EXTS.has(fromExt))  return "lock";
+  if (!ENCRYPT_EXTS.has(toExt) && ENCRYPT_EXTS.has(fromExt))   return "unlock";
+  return null;
+}
+
 const STATE_LABELS: Record<string, string> = {
   disconnected:   "Disconnected",
   connecting:     "Connecting...",
@@ -52,6 +75,8 @@ export interface SyncActivityRendererOptions {
   badgeContainer?: HTMLElement;
   /** Called when the user clicks a file entry to navigate to it. */
   onNavigate?: (path: string) => void;
+  /** Called when the user middle-clicks a file entry to open it in a new tab. */
+  onNavigateNewTab?: (path: string) => void;
   /** Returns true if the plugin has a server configured. */
   isConfigured?: () => boolean;
 }
@@ -195,10 +220,13 @@ export class SyncActivityRenderer {
         info.createDiv({ text: item.path, cls: "as-history-view-path" });
       }
 
-      row.createSpan({
-        text: item.status === "active" ? "syncing…" : "waiting…",
-        cls: "as-history-view-time as-history-view-time-pending",
-      });
+      if (item.status === "active") {
+        const spinEl = row.createSpan("as-history-view-time as-history-view-time-pending as-history-view-spinner");
+        setIcon(spinEl, "loader-2");
+        spinEl.style.animationDelay = `-${Date.now() % 1000}ms`;
+      } else {
+        row.createSpan({ text: "waiting…", cls: "as-history-view-time as-history-view-time-pending" });
+      }
     }
 
     // Completed history entries
@@ -214,11 +242,18 @@ export class SyncActivityRenderer {
       if (isNavigable) {
         const navigate = this.options.onNavigate!;
         row.addEventListener("click", () => navigate(entry.path));
+        if (this.options.onNavigateNewTab) {
+          const navigateNewTab = this.options.onNavigateNewTab;
+          row.addEventListener("auxclick", (e) => {
+            if (e.button === 1) { e.preventDefault(); navigateNewTab(entry.path); }
+          });
+        }
       }
 
       const icon = row.createSpan("as-history-view-icon");
+      const pluginIcon = getPluginOpIcon(entry);
       icon.addClass(`as-dir-${entry.direction}`);
-      setIcon(icon, DIRECTION_ICON[entry.direction] || "arrow-right");
+      setIcon(icon, pluginIcon ?? DIRECTION_ICON[entry.direction] ?? "arrow-right");
 
       const info = row.createDiv("as-history-view-info");
       const nameRow = info.createDiv("as-history-view-name-row");

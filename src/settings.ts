@@ -1067,7 +1067,7 @@ export class AdvancedSyncSettingsTab extends PluginSettingTab {
     // History display
     container.createDiv({ cls: "as-settings-section-label", text: "History Display" });
     new Setting(container).setName("Hide .obsidian/ in Recent Changes").setDesc("Filter out Obsidian config file changes from all history views")
-      .addToggle(t => { t.setValue(this.plugin.settings.hideObsidianInHistory ?? false); t.onChange(async v => { this.plugin.settings.hideObsidianInHistory = v; await this.plugin.saveSettings(); }); });
+      .addToggle(t => { t.setValue(this.plugin.settings.hideObsidianInHistory ?? false); t.onChange(async v => { this.plugin.settings.hideObsidianInHistory = v; await this.plugin.saveSettings(); this.plugin.refreshHistoryViews(); }); });
 
     // Advanced
     container.createDiv({ cls: "as-settings-section-label", text: "Advanced" });

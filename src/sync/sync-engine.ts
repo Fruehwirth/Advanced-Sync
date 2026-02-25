@@ -42,6 +42,8 @@ export interface SyncHistoryEntry {
   pending?: boolean;
   /** True for one render cycle when count just incremented — drives the flash animation. */
   flash?: boolean;
+  /** For renames: the path before the rename, used to detect archive/encrypt operations. */
+  oldPath?: string;
 }
 
 /** Per-file activity tracking during active sync operations. */
@@ -118,6 +120,8 @@ export class SyncEngine {
   private _state: SyncState = "disconnected";
   /** Changes queued while offline — flushed on reconnect. */
   private pendingLocalChanges: FileChange[] = [];
+  /** Called whenever pendingLocalChanges changes so the plugin can persist them. */
+  private onPendingChangesChanged: (changes: FileChange[]) => void = () => {};
   /** Rolling log of recently synced file changes (newest first). */
   readonly history: SyncHistoryEntry[] = [];
   /** Current sync operation active items (cleared after sync). */
@@ -137,11 +141,14 @@ export class SyncEngine {
   constructor(
     app: App,
     settings: AdvancedSyncSettings,
-    saveSettings: () => Promise<void>
+    saveSettings: () => Promise<void>,
+    initialPendingChanges: FileChange[] = [],
+    onPendingChangesChanged?: (changes: FileChange[]) => void
   ) {
     this.app = app;
     this.settings = settings;
     this.saveSettings = saveSettings;
+    if (onPendingChangesChanged) this.onPendingChangesChanged = onPendingChangesChanged;
 
     this.connection = new ConnectionManager(settings);
     this.fileWatcher = new FileWatcher(
@@ -149,6 +156,13 @@ export class SyncEngine {
       settings,
       (change) => this.handleLocalChange(change)
     );
+
+    // Restore pending changes from previous session
+    for (const change of initialPendingChanges) {
+      this.pendingLocalChanges.push(change);
+      const dir = change.type === "delete" ? "delete" : change.type === "create" ? "create" : "upload";
+      this.recordHistory(change.path, dir, true);
+    }
 
     this.setupConnectionCallbacks();
   }
@@ -222,15 +236,22 @@ export class SyncEngine {
   }
 
   /** Full cleanup — stops file watcher, clears all state. Call on plugin unload. */
-  destroy(): void {
+  destroy(clearPendingChanges = false): void {
     this.fileWatcher.stop();
     this.vaultKey = null;
-    this.pendingLocalChanges = [];
-    // Remove pending history entries
-    for (let i = this.history.length - 1; i >= 0; i--) {
-      if (this.history[i].pending) this.history.splice(i, 1);
+    if (clearPendingChanges) {
+      this.pendingLocalChanges = [];
+      this.savePendingChanges();
+      for (let i = this.history.length - 1; i >= 0; i--) {
+        if (this.history[i].pending) this.history.splice(i, 1);
+      }
     }
     this.disconnect();
+  }
+
+  /** Persist pending changes via the provided callback. */
+  private savePendingChanges(): void {
+    this.onPendingChangesChanged([...this.pendingLocalChanges]);
   }
 
   /** Whether any .obsidian/ files have changed during sync. */
@@ -894,7 +915,7 @@ export class SyncEngine {
   }
 
   /** Record a file change in the history log. */
-  private recordHistory(path: string, direction: SyncHistoryEntry["direction"], pending = false): void {
+  private recordHistory(path: string, direction: SyncHistoryEntry["direction"], pending = false, oldPath?: string): void {
     if ((direction === "upload" || direction === "download" || direction === "delete" || direction === "create") && path.startsWith(".obsidian/")) {
       this.obsidianFilesChanged = true;
     }
@@ -933,6 +954,7 @@ export class SyncEngine {
         timestamp: Date.now(),
         count: 1,
         pending: pending || undefined,
+        oldPath: oldPath || undefined,
       });
       if (this.history.length > MAX_HISTORY) this.history.pop();
     }
@@ -948,7 +970,7 @@ export class SyncEngine {
   }
 
   /** Upload a local file to the server. */
-  private async uploadFile(filePath: string, direction: "upload" | "create" = "upload"): Promise<void> {
+  private async uploadFile(filePath: string, direction: "upload" | "create" = "upload", fromPath?: string): Promise<void> {
     if (!this.vaultKey) return;
 
     try {
@@ -985,7 +1007,7 @@ export class SyncEngine {
       // Send raw encrypted blob (binary frame) — no base64/JSON wrapping
       this.connection.sendBinary(encrypted);
 
-      this.recordHistory(filePath, direction);
+      this.recordHistory(filePath, direction, false, fromPath);
 
       // Update local manifest
       this.localManifest.set(fileId, {
@@ -1186,9 +1208,10 @@ export class SyncEngine {
         this.pendingLocalChanges = this.pendingLocalChanges.filter(c => c.path !== change.oldPath);
       }
       this.pendingLocalChanges.push(change);
+      this.savePendingChanges();
       // Record pending history entry
       const dir = change.type === "delete" ? "delete" : change.type === "create" ? "create" : "upload";
-      this.recordHistory(change.path, dir, true);
+      this.recordHistory(change.path, dir, true, change.type === "rename" ? change.oldPath : undefined);
       return;
     }
 
@@ -1209,9 +1232,9 @@ export class SyncEngine {
         break;
       case "rename":
         if (change.oldPath) {
-          await this.handleLocalDelete(change.oldPath);
+          await this.handleLocalDelete(change.oldPath, true);
         }
-        await this.uploadFile(change.path, "create");
+        await this.uploadFile(change.path, "create", change.oldPath);
         break;
     }
   }
@@ -1221,6 +1244,7 @@ export class SyncEngine {
     if (this.pendingLocalChanges.length === 0) return;
     const changes = [...this.pendingLocalChanges];
     this.pendingLocalChanges = [];
+    this.savePendingChanges();
     // Remove pending history entries — executeLocalChange will create fresh ones
     for (let i = this.history.length - 1; i >= 0; i--) {
       if (this.history[i].pending) this.history.splice(i, 1);
@@ -1232,8 +1256,9 @@ export class SyncEngine {
         for (let j = i; j < changes.length; j++) {
           this.pendingLocalChanges.push(changes[j]);
           const dir = changes[j].type === "delete" ? "delete" : changes[j].type === "create" ? "create" : "upload";
-          this.recordHistory(changes[j].path, dir, true);
+          this.recordHistory(changes[j].path, dir, true, changes[j].type === "rename" ? changes[j].oldPath : undefined);
         }
+        this.savePendingChanges();
         return;
       }
       await this.executeLocalChange(changes[i]);
@@ -1241,7 +1266,7 @@ export class SyncEngine {
   }
 
   /** Handle local file deletion — sends FILE_DELETE to server. */
-  private async handleLocalDelete(filePath: string): Promise<void> {
+  private async handleLocalDelete(filePath: string, suppressHistory = false): Promise<void> {
     if (!this.vaultKey) return;
 
     const fileId = await deriveFileId(filePath, this.vaultKey);
@@ -1251,7 +1276,7 @@ export class SyncEngine {
       type: MessageType.FILE_DELETE,
       fileId,
     });
-    this.recordHistory(filePath, "delete");
+    if (!suppressHistory) this.recordHistory(filePath, "delete");
   }
 
   /** Write a file to the vault, suppressing the file watcher. */
