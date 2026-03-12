@@ -89,6 +89,10 @@ export class SyncActivityRenderer {
   private progressEl: HTMLElement | null = null;
   private progressBarFill: HTMLElement | null = null;
   private progressTextEl: HTMLElement | null = null;
+  /** Tracks which entries have a visible count indicator (keyed by path+direction). */
+  private activeCountTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  /** References to live count elements for direct DOM manipulation. */
+  private countElements: Map<string, HTMLElement> = new Map();
 
   constructor(container: HTMLElement, options: SyncActivityRendererOptions) {
     this.container = container;
@@ -159,6 +163,9 @@ export class SyncActivityRenderer {
     this.progressEl = null;
     this.progressBarFill = null;
     this.progressTextEl = null;
+    for (const timer of this.activeCountTimers.values()) clearTimeout(timer);
+    this.activeCountTimers.clear();
+    this.countElements.clear();
   }
 
   private renderBadge(): void {
@@ -269,12 +276,32 @@ export class SyncActivityRenderer {
       }
 
       if (entry.count > 1) {
+        const key = `${entry.path}:${entry.direction}`;
         const flashNow = (entry as any).flash === true;
         if (flashNow) (entry as any).flash = false;
-        const countCls = flashNow
-          ? "as-history-view-count as-history-view-count-flash"
-          : "as-history-view-count";
-        nameRow.createSpan({ text: `\u00d7${entry.count}`, cls: countCls });
+
+        const countEl = nameRow.createSpan({ text: `\u00d7${entry.count}`, cls: "as-history-view-count" });
+        this.countElements.set(key, countEl);
+
+        // On flash: show immediately and (re)start hide timer
+        if (flashNow) {
+          const prev = this.activeCountTimers.get(key);
+          if (prev) clearTimeout(prev);
+          // Pop in: bright white then settle
+          countEl.addClass("as-history-view-count-pop");
+          countEl.addClass("as-history-view-count-visible");
+          // Remove pop highlight after a short moment
+          setTimeout(() => countEl.removeClass("as-history-view-count-pop"), 150);
+          // After 2s, fade out by removing visible class on the live element
+          this.activeCountTimers.set(key, setTimeout(() => {
+            this.activeCountTimers.delete(key);
+            const el = this.countElements.get(key);
+            if (el) el.removeClass("as-history-view-count-visible");
+          }, 2000));
+        } else if (this.activeCountTimers.has(key)) {
+          // Timer still active from a previous flash — keep it visible
+          countEl.addClass("as-history-view-count-visible");
+        }
       }
 
       if (isFileDirection(entry.direction)) {

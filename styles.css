@@ -32,7 +32,10 @@
 }
 
 .as-status-off .as-statusbar-icon { color: var(--text-muted); }
-.as-status-connecting .as-statusbar-icon { color: var(--text-accent); }
+.as-status-connecting .as-statusbar-icon {
+  color: var(--text-accent);
+  animation: as-spin 1s linear infinite;
+}
 .as-status-syncing .as-statusbar-icon {
   color: var(--text-accent);
   animation: as-spin 1s linear infinite;
@@ -1109,8 +1112,17 @@
 .as-popup-status-idle    { color: var(--color-green, #4caf86); background: color-mix(in srgb, var(--color-green, #4caf86) 12%, transparent); }
 .as-popup-status-syncing .as-popup-status-dot { background: var(--interactive-accent); }
 .as-popup-status-syncing { color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
+.as-popup-status-connecting .as-popup-status-dot { background: var(--interactive-accent); animation: as-pulse 1.2s ease-in-out infinite; }
+.as-popup-status-connecting { color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
+.as-popup-status-authenticating .as-popup-status-dot { background: var(--interactive-accent); animation: as-pulse 1.2s ease-in-out infinite; }
+.as-popup-status-authenticating { color: var(--interactive-accent); background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
 .as-popup-status-error   .as-popup-status-dot { background: var(--color-red, #e05252); }
 .as-popup-status-error   { color: var(--color-red, #e05252); background: color-mix(in srgb, var(--color-red, #e05252) 12%, transparent); }
+
+@keyframes as-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
+}
 
 /* Separator line */
 .as-popup-separator {
@@ -1342,6 +1354,7 @@
   font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
+  opacity: 0;
   flex-shrink: 0;
   padding: 1px 2px;
 }
@@ -1358,13 +1371,16 @@
   flex-shrink: 0;
 }
 
-/* Count flash animation */
-@keyframes as-count-flash {
-  0%   { color: var(--text-normal); }
-  100% { color: var(--text-faint); }
+/* Count indicator — hidden by default, pops in bright, fades out quickly */
+.as-history-view-count {
+  transition: opacity 0.3s ease-out, color 0.15s ease-out;
 }
-.as-history-view-count-flash {
-  animation: as-count-flash 0.6s ease-out;
+.as-history-view-count-pop {
+  color: var(--text-normal) !important;
+  transition: none !important;
+}
+.as-history-view-count-visible {
+  opacity: 1 !important;
 }
 
 /* Clickable & pending rows */
