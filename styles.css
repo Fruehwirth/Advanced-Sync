@@ -1217,6 +1217,10 @@
 .as-dir-download { background: rgba(74, 158, 255, 0.15); color: #4a9eff; }
 .as-dir-delete   { background: rgba(224, 82, 82, 0.15);  color: var(--color-red,  #e05252); }
 .as-dir-create   { background: rgba(255, 193, 7, 0.15);  color: #e6a817; }
+.as-dir-rename   { background: rgba(171, 130, 255, 0.15); color: #ab82ff; }
+
+.as-history-view-name-old { color: var(--text-muted); }
+.as-history-view-rename-arrow { color: var(--text-faint); flex-shrink: 0; }
 
 /* (ribbon icon removed) */
 
@@ -1225,6 +1229,40 @@
    ============================================================ */
 .as-history-view {
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.as-history-view-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+/* Pull-to-refresh spinner */
+.as-pull-spinner {
+  height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+}
+.as-pull-spinner-icon {
+  color: var(--text-muted);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.as-pull-spinner-icon .svg-icon {
+  width: 20px;
+  height: 20px;
+}
+.as-pull-spinner-active .as-pull-spinner-icon {
+  animation: as-spin 1s linear infinite;
 }
 
 .as-history-view-header {
@@ -1239,6 +1277,29 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--text-normal);
+}
+
+.as-history-view-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.as-history-view-eye-btn {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 2px;
+  border-radius: var(--radius-s);
+}
+.as-history-view-eye-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.as-history-view-eye-btn .svg-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .as-history-view-badge {

@@ -12,6 +12,7 @@ const DIRECTION_ICON: Record<string, string> = {
   download:   "arrow-down",
   delete:     "trash-2",
   create:     "plus",
+  rename:     "pencil",
   connect:    "wifi",
   disconnect: "wifi-off",
   error:      "alert-triangle",
@@ -201,7 +202,7 @@ export class SyncActivityRenderer {
       return;
     }
 
-    const isFileDirection = (d: string) => ["upload", "download", "delete", "create"].includes(d);
+    const isFileDirection = (d: string) => ["upload", "download", "delete", "create", "rename"].includes(d);
 
     // In-progress items — same row shape as history, grayed out
     for (const item of inProgress) {
@@ -264,6 +265,15 @@ export class SyncActivityRenderer {
 
       const info = row.createDiv("as-history-view-info");
       const nameRow = info.createDiv("as-history-view-name-row");
+
+      if (entry.direction === "rename" && entry.oldPath) {
+        // Show: oldName → newName
+        const oldFilename = entry.oldPath.split("/").pop() ?? entry.oldPath;
+        const oldDot = oldFilename.lastIndexOf(".");
+        const oldName = oldDot > 0 ? oldFilename.substring(0, oldDot) : oldFilename;
+        nameRow.createSpan({ text: oldName, cls: "as-history-view-name as-history-view-name-old" });
+        nameRow.createSpan({ text: " → ", cls: "as-history-view-rename-arrow" });
+      }
 
       const dotIdx = entry.filename.lastIndexOf(".");
       const hasExt = dotIdx > 0;

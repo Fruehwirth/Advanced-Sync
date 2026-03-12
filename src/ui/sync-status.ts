@@ -19,7 +19,7 @@ const STATUS_MAP: Record<SyncState, StatusConfig> = {
   connecting:     { icon: "loader",         text: "Connecting...",  cls: "as-status-connecting" },
   authenticating: { icon: "loader",         text: "Authenticating...", cls: "as-status-connecting" },
   syncing:        { icon: "refresh-cw",     text: "Syncing...",     cls: "as-status-syncing" },
-  idle:           { icon: "check-circle",   text: "Synced",         cls: "as-status-synced" },
+  idle:           { icon: "shield-check",   text: "Synced",         cls: "as-status-synced" },
   error:          { icon: "alert-triangle", text: "Sync Error",     cls: "as-status-error" },
 };
 

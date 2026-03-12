@@ -115,6 +115,14 @@ export default class AdvancedSyncPlugin extends Plugin {
         (path) => { this.app.workspace.openLinkText(path, "", false); },
         () => this.settings.setupComplete,
         (path) => { this.app.workspace.openLinkText(path, "", "tab"); },
+        () => this.settings.hideObsidianInHistory ?? false,
+        (value) => {
+          this.settings.hideObsidianInHistory = value;
+          this.saveSettings();
+          this.refreshHistoryViews();
+          this.settingsTab.notifyDataChanged?.();
+        },
+        () => this.autoConnect(),
       )
     );
 
@@ -228,6 +236,11 @@ export default class AdvancedSyncPlugin extends Plugin {
     this.refreshHistoryViews();
     this.settingsTab.notifyDataChanged?.();
 
+    // Notify history views of state change (for pull-to-refresh spinner)
+    for (const leaf of this.app.workspace.getLeavesOfType(SYNC_HISTORY_VIEW_TYPE)) {
+      if (leaf.view instanceof SyncHistoryView) leaf.view.notifyStateChange(state);
+    }
+
     switch (state) {
       case "idle":
         for (const leaf of this.app.workspace.getLeavesOfType(SYNC_HISTORY_VIEW_TYPE)) {
@@ -242,7 +255,10 @@ export default class AdvancedSyncPlugin extends Plugin {
           if (leaf.view instanceof SyncHistoryView) leaf.view.clearProgress();
         }
         this.settingsTab.notifyProgressChanged?.(0, 0, "");
-        if (detail) new Notice(`Advanced Sync: ${detail}`, 5000);
+        // Only notify if the user has pending local changes that can't sync
+        if (detail && this.pendingChanges.length > 0) {
+          new Notice(`Advanced Sync: ${detail}`, 5000);
+        }
         break;
     }
   }

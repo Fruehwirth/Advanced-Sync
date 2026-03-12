@@ -34,7 +34,7 @@ import type { AdvancedSyncSettings } from "../types";
 export interface SyncHistoryEntry {
   path: string;
   filename: string;
-  direction: "upload" | "download" | "delete" | "create" | "connect" | "disconnect" | "error";
+  direction: "upload" | "download" | "delete" | "create" | "rename" | "connect" | "disconnect" | "error";
   timestamp: number;
   /** How many consecutive times this same file+direction was recorded. */
   count: number;
@@ -465,17 +465,11 @@ export class SyncEngine {
   private setupConnectionCallbacks(): void {
     this.connection.onStateChange = (state, error) => {
       if (state === "idle") {
-        if (!this.readyForIncrementalSync) {
-          this.recordHistory("Server", "connect");
-        }
+        // no-op — connection state is shown in the status badge
       } else if (state === "disconnected") {
-        if (this.readyForIncrementalSync) {
-          this.recordHistory("Server", "disconnect");
-        }
         // Mark not ready so changes are queued until next sync completes
         this.readyForIncrementalSync = false;
       } else if (state === "error" && error) {
-        this.recordHistory(error, "error");
         // Handle session revoked
         if (error === "Session revoked") {
           this.handleSessionRevoked();
@@ -916,7 +910,7 @@ export class SyncEngine {
 
   /** Record a file change in the history log. */
   private recordHistory(path: string, direction: SyncHistoryEntry["direction"], pending = false, oldPath?: string): void {
-    if ((direction === "upload" || direction === "download" || direction === "delete" || direction === "create") && path.startsWith(".obsidian/")) {
+    if ((direction === "upload" || direction === "download" || direction === "delete" || direction === "create" || direction === "rename") && path.startsWith(".obsidian/")) {
       this.obsidianFilesChanged = true;
     }
 
@@ -970,7 +964,7 @@ export class SyncEngine {
   }
 
   /** Upload a local file to the server. */
-  private async uploadFile(filePath: string, direction: "upload" | "create" = "upload", fromPath?: string): Promise<void> {
+  private async uploadFile(filePath: string, direction: "upload" | "create" | "rename" = "upload", fromPath?: string): Promise<void> {
     if (!this.vaultKey) return;
 
     try {
@@ -1210,7 +1204,7 @@ export class SyncEngine {
       this.pendingLocalChanges.push(change);
       this.savePendingChanges();
       // Record pending history entry
-      const dir = change.type === "delete" ? "delete" : change.type === "create" ? "create" : "upload";
+      const dir = change.type === "delete" ? "delete" : change.type === "create" ? "create" : change.type === "rename" ? "rename" : "upload";
       this.recordHistory(change.path, dir, true, change.type === "rename" ? change.oldPath : undefined);
       return;
     }
@@ -1234,7 +1228,7 @@ export class SyncEngine {
         if (change.oldPath) {
           await this.handleLocalDelete(change.oldPath, true);
         }
-        await this.uploadFile(change.path, "create", change.oldPath);
+        await this.uploadFile(change.path, "rename", change.oldPath);
         break;
     }
   }
@@ -1255,7 +1249,7 @@ export class SyncEngine {
       if (!this.connection.isConnected || !this.readyForIncrementalSync) {
         for (let j = i; j < changes.length; j++) {
           this.pendingLocalChanges.push(changes[j]);
-          const dir = changes[j].type === "delete" ? "delete" : changes[j].type === "create" ? "create" : "upload";
+          const dir = changes[j].type === "delete" ? "delete" : changes[j].type === "create" ? "create" : changes[j].type === "rename" ? "rename" : "upload";
           this.recordHistory(changes[j].path, dir, true, changes[j].type === "rename" ? changes[j].oldPath : undefined);
         }
         this.savePendingChanges();
